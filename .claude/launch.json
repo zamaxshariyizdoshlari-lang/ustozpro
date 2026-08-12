@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ustozpro-static",
+      "runtimeExecutable": "powershell.exe",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "C:\\Temp\\claude\\C--Users-Acer-Servis-Ustozpro\\f266b7a2-434a-48df-bc30-c946e81c351e\\scratchpad\\serve.ps1",
+        "-Root", "C:\\Users\\Acer_Servis\\Ustozpro",
+        "-Port", "8080"
+      ],
+      "port": 8080
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+# Maxfiy sozlamalar (Telegram token, admin/parol) — GitHub'ga yuklanmasin
+js/config.js
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
