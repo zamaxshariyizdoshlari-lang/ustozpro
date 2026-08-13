@@ -11,6 +11,7 @@ Zamaxshariy Izdoshlari Maktabi uchun o'quvchilarni test qilish, natijalarni saql
   - `get-test` — tanlangan sinf/fan uchun savollarni **to'g'ri javobsiz** qaytaradi va urinishlar limitini tekshiradi.
   - `submit-result` — javoblarni serverda baholaydi, natijani bazaga yozadi, Telegram xabarnomasini yuboradi (bot tokeni faqat serverda).
   - `reveal-answers` — o'qituvchi paroli tekshirilgach, to'g'ri javoblarni qaytaradi.
+  - `student-login` / `student-logout` / `student-me` / `student-change-pin` — o'quvchi shaxsiy kabineti uchun PIN-asosli autentifikatsiya (quyida batafsil).
 - **Reyting hisob-kitobi** (`get_monthly_rating`, `get_mutolaa_rating`, `get_rating_formula_info`) — Postgres RPC funksiyalari sifatida serverda hisoblanadi (admin panel butun natijalar jadvalini brauzerga tortib olib client'da hisoblamaydi).
 
 > ⚠️ **Eslatma**: `supabase/migrations/` da o'quvchi/sinf/fan **seed (namunaviy) ma'lumotlari yo'q** — chunki bu repo public, va haqiqiy o'quvchi ismlari (F.I.Sh.) shaxsiy ma'lumot hisoblanadi. Ular faqat Supabase bazasida saqlanadi, GitHub'ga hech qachon yuklanmaydi.
@@ -52,10 +53,10 @@ Keyin brauzerda: `http://localhost:8080`
 
 ## Backendni birinchi marta sozlash (yangi Supabase loyihasida)
 
-1. `supabase/migrations` orqali quyidagi jadvallarni yarating: `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets` — barchasida RLS yoqilgan, faqat admin (`is_admin()`) yozishi mumkin, `questions`/`results`/`app_secrets` anon uchun umuman o'qilmaydi.
+1. `supabase/migrations` orqali quyidagi jadvallarni yarating: `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets`, `student_auth`, `student_sessions` — barchasida RLS yoqilgan, faqat admin (`is_admin()`) yozishi mumkin, `questions`/`results`/`app_secrets`/`student_auth`/`student_sessions` anon uchun umuman o'qilmaydi.
 2. `app_secrets` jadvaliga `TG_TOKEN`, `TG_CHAT`, `ANSWER_PASS` qiymatlarini kiriting (faqat Edge Function'lar `service_role` orqali o'qiy oladi).
 3. Supabase Auth'da bitta admin foydalanuvchi yarating, uning UUID'sini `is_admin()` funksiyasiga yozing.
-4. `get-test`, `submit-result`, `reveal-answers` Edge Function'larini deploy qiling.
+4. `get-test`, `submit-result`, `reveal-answers`, `student-login`, `student-logout`, `student-me`, `student-change-pin` Edge Function'larini deploy qiling.
 5. `js/config.js`'ga yangi loyihaning URL/anon key'ini yozing.
 
 ## Savollarni qo'shish
@@ -64,6 +65,15 @@ Ikki yo'l bor:
 
 - **Qo'lda**: Admin panel → Boshqarish → Savollar — sinf va fanni tanlab, savol/variantlar/to'g'ri javob/izohni kiritasiz.
 - **Ommaviy import**: Admin panel → Bazani yangilash — eski Google Sheets havolasini (CSV) kiritib, "Import qilish" tugmasini bosasiz. Ustunlar tartibi: Sinf, Fan, Savol, A, B, C, D, To'g'ri javob (a/b/c/d), Izoh. Sinf ustunida bir nechta sinf ham qo'llab-quvvatlanadi ("5,6,7" yoki "5-8").
+
+## O'quvchi kabineti (shaxsiy panel)
+
+O'quvchilar "Mening kabinetim" bo'limida sinf + ism + shaxsiy 4 xonali PIN-kod bilan kirib, o'zlarining test tarixini, 1200/2000 ballik reytingdagi o'rnini va fan bo'yicha rivojlanish grafigini ko'rishlari mumkin.
+
+- **Nega Supabase Auth emas**: o'quvchilarda email yo'q, va 69+ o'quvchi uchun parol boshqarish (unutilsa tiklash va h.k.) og'ir operatsion yuk bo'lardi. Buning o'rniga PIN `student_auth` jadvalida bcrypt bilan xeshlanib saqlanadi, kirish `student-login` Edge Function orqali tekshiriladi va muvaffaqiyatli bo'lsa `student_sessions` jadvaliga oddiy tasodifiy token yoziladi (30 kun amal qiladi, brauzer `localStorage`da saqlaydi).
+- **PIN berish**: Admin panel → Boshqarish → O'quvchilar → har bir ism yonidagi 🔑 tugmasi `admin_reset_student_pin` RPC'ni chaqiradi va yangi tasodifiy PIN'ni bir martalik ko'rsatadi (admin buni o'quvchiga og'zaki/qog'ozda beradi — PIN qayta hech qayerda ko'rinmaydi, faqat xeshi saqlanadi).
+- **Bloklash**: 5 marta xato PIN kiritilsa, hisob 15 daqiqaga bloklanadi (`student_auth.pin_attempts`/`pin_locked_until`).
+- **Ma'lumotlar izolyatsiyasi**: `student_auth` va `student_sessions` jadvallarida RLS yoqilgan, lekin hech qanday siyosat yo'q — na `anon`, na `authenticated` (admin) ularni to'g'ridan-to'g'ri o'qiy olmaydi, faqat `service_role` (Edge Function ichida) va `SECURITY DEFINER` RPC orqali kirish mumkin.
 
 ## Xavfsizlik
 

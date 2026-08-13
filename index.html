@@ -36,6 +36,7 @@
       <div class="nav-section-label">Asosiy</div>
       <div class="nav-item active" id="nav-home" onclick="navigateTo('home')"><span class="nav-icon">🏠</span>Bosh sahifa</div>
       <div class="nav-item" id="nav-test" onclick="navigateTo('test-setup')"><span class="nav-icon">📝</span>Yangi test</div>
+      <div class="nav-item" id="nav-student" onclick="navigateTo('student')"><span class="nav-icon">👤</span>Mening kabinetim</div>
       <div class="nav-section-label">Boshqaruv</div>
       <div class="nav-item" id="nav-admin" onclick="navigateTo('admin')"><span class="nav-icon">🔐</span>Admin panel</div>
       <div class="nav-item" id="nav-manage" onclick="navigateTo('manage')"><span class="nav-icon">⚙️</span>Boshqarish</div>
@@ -542,6 +543,62 @@
         </div>
       </div>
 
+      <!-- ═══ STUDENT CABINET ═══ -->
+      <div class="screen" id="screen-student">
+        <div class="setup-card" id="studentLoginCard">
+          <div class="setup-card-header">
+            <div class="setup-card-icon">👤</div>
+            <div><div class="setup-card-title">Mening kabinetim</div><div class="setup-card-subtitle">Sinf, ism va shaxsiy PIN-kodni kiriting</div></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Sinf</label>
+            <select class="form-control select" id="stuClass" onchange="updateStudentLoginUI()"><option value="">— Sinfni tanlang —</option></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Ismingiz</label>
+            <select class="form-control select" id="stuName"><option value="">— Avval sinfni tanlang —</option></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">PIN-kod</label>
+            <input type="password" inputmode="numeric" maxlength="4" class="form-control" id="stuPin" placeholder="••••" onkeydown="if(event.key==='Enter')studentLogin()">
+          </div>
+          <div class="info-note" style="margin-bottom:14px">💡 PIN-kodingiz yo'q yoki unutgan bo'lsangiz, o'qituvchidan so'rang.</div>
+          <button class="btn btn-primary btn-lg btn-full" id="stuLoginBtn" onclick="studentLogin()">🔓 Kirish</button>
+        </div>
+
+        <div id="studentPanelContent" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
+            <div>
+              <div class="section-title" style="font-size:20px">👤 <span id="stuPanelName">—</span></div>
+              <div style="font-size:12px;color:var(--text-dim);margin-top:2px"><span id="stuPanelClass">—</span></div>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="studentLogout()">↩ Chiqish</button>
+          </div>
+
+          <div class="stats-grid" id="stuRatingCards"></div>
+
+          <div class="section-header"><div class="section-title">Fanlar bo'yicha rivojlanish</div></div>
+          <div id="stuProgressCharts"><div class="empty-state">Hali test natijasi yo'q.</div></div>
+
+          <div class="section-header"><div class="section-title">Test tarixi</div></div>
+          <div class="rating-table-wrap">
+            <table class="rating-tbl">
+              <thead><tr><th>Fan</th><th>To'g'ri</th><th>%</th><th>Sana</th></tr></thead>
+              <tbody id="stuHistoryBody"></tbody>
+            </table>
+          </div>
+
+          <div class="setup-card" style="margin-top:20px">
+            <div class="setup-card-header"><div class="setup-card-icon">🔑</div><div><div class="setup-card-title">PIN-kodni almashtirish</div></div></div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">Eski PIN</label><input type="password" inputmode="numeric" maxlength="4" class="form-control" id="stuOldPin" placeholder="••••"></div>
+              <div class="form-group"><label class="form-label">Yangi PIN</label><input type="password" inputmode="numeric" maxlength="4" class="form-control" id="stuNewPin" placeholder="••••"></div>
+            </div>
+            <button class="btn btn-primary btn-md" id="stuChangePinBtn" onclick="changeStudentPin()">💾 Yangilash</button>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /page-content -->
   </div><!-- /main-content -->
 </div><!-- /app-shell -->
@@ -555,6 +612,17 @@
     <input type="text" class="lock-input" id="typeConfirmInput" placeholder="" onkeydown="if(event.key==='Enter')submitTypeConfirm()">
     <button class="btn btn-danger btn-full btn-md" onclick="submitTypeConfirm()">🗑️ Tasdiqlash va o'chirish</button>
     <button class="btn btn-secondary btn-full btn-sm" style="margin-top:8px" onclick="closeTypeConfirm()">Bekor qilish</button>
+  </div>
+</div>
+
+<!-- PIN NATIJASI MODAL -->
+<div class="lock-modal-overlay hidden" id="pinResultOverlay">
+  <div class="lock-modal">
+    <span class="lock-icon">🔑</span>
+    <div class="lock-title">Yangi PIN yaratildi</div>
+    <div class="lock-desc" id="pinResultDesc">O'quvchiga shu PIN-kodni bering:</div>
+    <div class="lock-input" id="pinResultValue" style="display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;letter-spacing:0.3em">0000</div>
+    <button class="btn btn-primary btn-full btn-md" onclick="closePinResultModal()">Tushunarli</button>
   </div>
 </div>
 

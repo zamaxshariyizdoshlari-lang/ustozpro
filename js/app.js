@@ -139,7 +139,8 @@ const SCREENS = {
   'result':     { screen:'screen-result',     nav:'nav-test',   title:'Natijalar',        bc:'Test natijalari' },
   'admin':      { screen:'screen-admin',      nav:'nav-admin',  title:'Admin Panel',      bc:'Admin boshqaruvi' },
   'manage':     { screen:'screen-manage',     nav:'nav-manage', title:'Boshqarish',       bc:'Sinflar va o\'quvchilar' },
-  'sync':       { screen:'screen-sync',       nav:'nav-sync',   title:'Bazani yangilash', bc:'Google Sheets import' }
+  'sync':       { screen:'screen-sync',       nav:'nav-sync',   title:'Bazani yangilash', bc:'Google Sheets import' },
+  'student':    { screen:'screen-student',    nav:'nav-student',title:'Mening kabinetim', bc:'O\'quvchi kabineti' }
 };
 function navigateTo(page) {
   const cfg = SCREENS[page]; if (!cfg) return;
@@ -153,6 +154,7 @@ function navigateTo(page) {
   if (page==='sync') applyAdminGates();
   if (page==='home') { updateDashboardStats(); renderRecentResults(); }
   if (page==='admin' && adminLoggedIn) { populateAdminFilters(); refreshAdminResults().then(()=>{renderResultsTable(); renderRatingPanel();}); }
+  if (page==='student') initStudentScreen();
   closeSidebar(); window.scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -669,7 +671,7 @@ async function syncData() {
    CLASS MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
 function populateClassSelects() {
-  ['sClass','manageClass','manageClassSub','qClass'].forEach(id=>{
+  ['sClass','manageClass','manageClassSub','qClass','stuClass'].forEach(id=>{
     const sel=document.getElementById(id); if(!sel) return;
     const cur=sel.value;
     sel.innerHTML='<option value="">— Sinfni tanlang —</option>';
@@ -765,8 +767,17 @@ function renderStudentList() {
   const list = term ? students.filter(s=>s.full_name.toLowerCase().includes(term)) : students;
   document.getElementById('studentList').innerHTML=list.length===0
     ?`<div class="empty-state">${term?'Qidiruv bo\'yicha o\'quvchi topilmadi.':(cls?'O\'quvchilar yo\'q.':'Sinfni tanlang.')}</div>`
-    :list.map(s=>`<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${esc(s.full_name)}</span><button class="li-del" onclick="removeStudent('${s.id}','${s.full_name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
+    :list.map(s=>`<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${esc(s.full_name)}</span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="resetStudentPin('${s.id}','${s.full_name.replace(/'/g,"\\'")}')" title="PIN yaratish/qayta tiklash">🔑</button><button class="li-del" onclick="removeStudent('${s.id}','${s.full_name.replace(/'/g,"\\'")}')">🗑️</button></div></div>`).join('');
 }
+async function resetStudentPin(id, name) {
+  if (!confirm(`"${name}" uchun yangi PIN yaratilsinmi? Eski PIN (agar bo'lsa) endi ishlamay qoladi.`)) return;
+  const { data, error } = await supabaseClient.rpc('admin_reset_student_pin', { p_student_id: id });
+  if (error) { showToast('❌','PIN yaratishda xatolik','error'); return; }
+  document.getElementById('pinResultDesc').innerText = `"${name}" uchun yangi PIN-kod:`;
+  document.getElementById('pinResultValue').innerText = data;
+  document.getElementById('pinResultOverlay').classList.remove('hidden');
+}
+function closePinResultModal() { document.getElementById('pinResultOverlay').classList.add('hidden'); }
 
 /* ═══════════════════════════════════════════════
    SUBJECT MANAGEMENT (admin)
@@ -1354,4 +1365,169 @@ function launchConfetti(percent){
     else{canvas.style.display='none';ctx.clearRect(0,0,canvas.width,canvas.height);}
   }
   requestAnimationFrame(draw);
+}
+
+/* ═══════════════════════════════════════════════
+   STUDENT CABINET — shaxsiy PIN orqali kirish (Supabase Auth emas,
+   student-login/-me/-change-pin/-logout Edge Function'lari orqali)
+═══════════════════════════════════════════════ */
+const STUDENT_SESSION_KEY = 'ustoz_pro_student_session';
+let studentSession = null; // {token, name, className}
+let studentLoginBusy = false;
+let studentPinChangeBusy = false;
+
+function loadStudentSessionFromStorage() {
+  try {
+    const raw = localStorage.getItem(STUDENT_SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!s?.token) return null;
+    return s;
+  } catch(e) { return null; }
+}
+function saveStudentSession(s) { localStorage.setItem(STUDENT_SESSION_KEY, JSON.stringify(s)); }
+function clearStudentSession() { localStorage.removeItem(STUDENT_SESSION_KEY); }
+
+function initStudentScreen() {
+  studentSession = loadStudentSessionFromStorage();
+  if (studentSession) {
+    document.getElementById('studentLoginCard').style.display = 'none';
+    document.getElementById('studentPanelContent').style.display = 'block';
+    loadStudentPanel();
+  } else {
+    document.getElementById('studentLoginCard').style.display = '';
+    document.getElementById('studentPanelContent').style.display = 'none';
+    document.getElementById('stuPin').value = '';
+  }
+}
+function updateStudentLoginUI() {
+  const clsName = document.getElementById('stuClass').value;
+  const sel = document.getElementById('stuName');
+  sel.innerHTML = '<option value="">— Ismingizni tanlang —</option>';
+  const cls = classesCache.find(c=>c.name===clsName);
+  if (cls) studentsForClass(cls.id).forEach(s=>sel.innerHTML+=`<option value="${esc(s.full_name)}">${esc(s.full_name)}</option>`);
+}
+async function studentLogin() {
+  if (studentLoginBusy) return;
+  const class_name = document.getElementById('stuClass').value;
+  const student_name = document.getElementById('stuName').value;
+  const pin = document.getElementById('stuPin').value.trim();
+  if (!class_name || !student_name) { showToast('⚠️','Sinf va ismingizni tanlang!','warning'); return; }
+  if (!/^\d{4}$/.test(pin)) { showToast('⚠️','PIN 4 xonali raqam bo\'lishi kerak!','warning'); return; }
+
+  studentLoginBusy = true;
+  const btn = document.getElementById('stuLoginBtn'); if (btn) btn.disabled = true;
+  let resp;
+  try { resp = await callEdgeFunction('student-login', { class_name, student_name, pin }); }
+  catch(e) { showToast('❌','Server bilan bog\'lanishda xatolik','error'); studentLoginBusy=false; if(btn) btn.disabled=false; return; }
+  studentLoginBusy = false; if (btn) btn.disabled = false;
+
+  if (resp.error==='invalid_credentials') { showToast('❌','Sinf yoki ism noto\'g\'ri','error'); return; }
+  if (resp.error==='pin_not_set') { showToast('🔒','Sizga hali PIN o\'rnatilmagan','error','O\'qituvchidan so\'rang'); return; }
+  if (resp.error==='wrong_pin') { showToast('❌','PIN noto\'g\'ri!','error',`Qolgan urinishlar: ${resp.attempts_left}`); return; }
+  if (resp.error==='locked') {
+    const until = new Date(resp.locked_until).toLocaleTimeString('uz-UZ');
+    showToast('🚫','Ko\'p xato urinish!','error',`${until}gacha bloklandi`);
+    return;
+  }
+  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+
+  studentSession = { token: resp.token, name: resp.student.full_name, className: resp.student.class_name };
+  saveStudentSession(studentSession);
+  document.getElementById('studentLoginCard').style.display = 'none';
+  document.getElementById('studentPanelContent').style.display = 'block';
+  document.getElementById('stuPin').value = '';
+  showToast('✅','Xush kelibsiz!','success', studentSession.name);
+  loadStudentPanel();
+}
+async function studentLogout() {
+  if (studentSession?.token) { try { await callEdgeFunction('student-logout', { token: studentSession.token }); } catch(e) {} }
+  studentSession = null;
+  clearStudentSession();
+  document.getElementById('studentLoginCard').style.display = '';
+  document.getElementById('studentPanelContent').style.display = 'none';
+  showToast('👋','Kabinetdan chiqdingiz','info');
+}
+async function loadStudentPanel() {
+  if (!studentSession?.token) return;
+  let resp;
+  try { resp = await callEdgeFunction('student-me', { token: studentSession.token }); }
+  catch(e) { showToast('❌','Ma\'lumotlarni yuklashda xatolik','error'); return; }
+  if (resp.error==='invalid_session') { studentLogout(); showToast('🔒','Sessiya muddati tugagan, qayta kiring','warning'); return; }
+  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+
+  document.getElementById('stuPanelName').innerText = resp.student.full_name;
+  document.getElementById('stuPanelClass').innerText = `🏫 ${resp.student.class_name}`;
+  renderStudentRatingCards(resp.monthly_rating, resp.mutolaa_rating);
+  renderStudentHistory(resp.history||[]);
+  renderStudentProgressCharts(resp.history||[]);
+}
+function renderStudentRatingCards(monthly, mutolaa) {
+  const el = document.getElementById('stuRatingCards');
+  const cards = [];
+  if (monthly) {
+    cards.push(`<div class="stat-card blue"><div class="stat-icon">🏆</div><div class="stat-num">#${monthly.rank}</div><div class="stat-lbl">1200 ballik reyting (${monthly.total_students} o'quvchidan)</div><div class="stat-trend trend-up">${monthly.score} ball</div></div>`);
+  }
+  if (mutolaa) {
+    cards.push(`<div class="stat-card purple"><div class="stat-icon">📖</div><div class="stat-num">#${mutolaa.rank}</div><div class="stat-lbl">Mutolaa reytingi (${mutolaa.total_students} o'quvchidan)</div><div class="stat-trend trend-up">${mutolaa.score} ball</div></div>`);
+  }
+  el.innerHTML = cards.length ? cards.join('') : '<div class="empty-state">Reytingga tushish uchun kamida bitta test topshiring.</div>';
+}
+function renderStudentHistory(history) {
+  const body = document.getElementById('stuHistoryBody');
+  body.innerHTML = history.length===0
+    ? '<tr><td colspan="4" style="text-align:center;padding:22px;color:var(--text-dim)">Hali test topshirilmagan</td></tr>'
+    : history.map(r=>{
+        const cls = r.percent>=70?'high':r.percent>=50?'mid':'low';
+        return `<tr><td>${esc(r.subject_name)}</td><td>${r.score}/${r.total}</td><td><span class="score-chip ${cls}">${r.percent}%</span></td><td style="font-size:11px;color:var(--text-dim)">${fmtDate(r.created_at)}</td></tr>`;
+      }).join('');
+}
+function renderStudentProgressCharts(history) {
+  const el = document.getElementById('stuProgressCharts');
+  const bySubject = {};
+  [...history].reverse().forEach(r=>{ (bySubject[r.subject_name] ||= []).push(r); });
+  const subjects = Object.keys(bySubject).filter(s=>bySubject[s].length>=1);
+  if (subjects.length===0) { el.innerHTML = '<div class="empty-state">Hali test natijasi yo\'q.</div>'; return; }
+
+  el.innerHTML = subjects.map(sub=>{
+    const points = bySubject[sub];
+    const w=260, h=54, pad=6;
+    const stepX = points.length>1 ? (w-2*pad)/(points.length-1) : 0;
+    const coords = points.map((p,i)=>{
+      const x = pad + i*stepX;
+      const y = h - pad - ((p.percent||0)/100)*(h-2*pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const last = points[points.length-1];
+    const lastColor = last.percent>=70?'#059669':last.percent>=50?'#d97706':'#dc2626';
+    return `<div class="list-item" style="align-items:center">
+      <div class="li-icon">📈</div>
+      <span class="li-text"><b>${esc(sub)}</b> — ${points.length} ta test</span>
+      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="flex-shrink:0">
+        ${points.length>1?`<polyline points="${coords}" fill="none" stroke="${lastColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`:''}
+        ${points.map((p,i)=>`<circle cx="${(pad+i*stepX).toFixed(1)}" cy="${(h-pad-((p.percent||0)/100)*(h-2*pad)).toFixed(1)}" r="2.5" fill="${lastColor}"/>`).join('')}
+      </svg>
+      <span class="score-chip ${last.percent>=70?'high':last.percent>=50?'mid':'low'}" style="flex-shrink:0">${last.percent}%</span>
+    </div>`;
+  }).join('');
+}
+async function changeStudentPin() {
+  if (studentPinChangeBusy) return;
+  const old_pin = document.getElementById('stuOldPin').value.trim();
+  const new_pin = document.getElementById('stuNewPin').value.trim();
+  if (!/^\d{4}$/.test(old_pin) || !/^\d{4}$/.test(new_pin)) { showToast('⚠️','PIN 4 xonali raqam bo\'lishi kerak!','warning'); return; }
+  studentPinChangeBusy = true;
+  const btn = document.getElementById('stuChangePinBtn'); if (btn) btn.disabled = true;
+  let resp;
+  try { resp = await callEdgeFunction('student-change-pin', { token: studentSession.token, old_pin, new_pin }); }
+  catch(e) { showToast('❌','Xatolik yuz berdi','error'); studentPinChangeBusy=false; if(btn) btn.disabled=false; return; }
+  studentPinChangeBusy = false; if (btn) btn.disabled = false;
+
+  if (resp.error==='wrong_pin') { showToast('❌','Eski PIN noto\'g\'ri!','error'); return; }
+  if (resp.error==='invalid_session') { studentLogout(); return; }
+  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+
+  document.getElementById('stuOldPin').value = '';
+  document.getElementById('stuNewPin').value = '';
+  showToast('✅','PIN yangilandi!','success');
 }
