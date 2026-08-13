@@ -5,8 +5,8 @@ Zamaxshariy Izdoshlari Maktabi uchun o'quvchilarni test qilish, natijalarni saql
 ## Arxitektura
 
 - **Frontend**: statik sayt, hech qanday build qadam kerak emas.
-- **Baza**: Supabase Postgres — `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets` jadvallari, barchasi Row Level Security bilan himoyalangan. Sxema `supabase/migrations/` papkasida versiyalangan.
-- **Auth**: Supabase Auth (email/parol) — bitta admin akkaunt, `is_admin()` funksiyasi orqali RLS siyosatlariga bog'langan.
+- **Baza**: Supabase Postgres — `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets`, `teachers`, `teacher_subjects` jadvallari, barchasi Row Level Security bilan himoyalangan. Sxema `supabase/migrations/` papkasida versiyalangan.
+- **Auth**: Supabase Auth (email/parol) — ikki rol: bitta **super-admin** (`is_admin()` orqali, hammasini boshqaradi) va istalgan sondagi **o'qituvchi**lar (`teachers`/`teacher_subjects` orqali, faqat o'z fan(lar)i bilan cheklangan — quyida batafsil).
 - **Edge Functions** (`supabase/functions/` — bu repoda ham saqlanadi, Supabase loyihasiga alohida deploy qilinadi):
   - `get-test` — tanlangan sinf/fan uchun savollarni **to'g'ri javobsiz** qaytaradi va urinishlar limitini tekshiradi.
   - `submit-result` — javoblarni serverda baholaydi, natijani bazaga yozadi, Telegram xabarnomasini yuboradi (bot tokeni faqat serverda).
@@ -53,7 +53,7 @@ Keyin brauzerda: `http://localhost:8080`
 
 ## Backendni birinchi marta sozlash (yangi Supabase loyihasida)
 
-1. `supabase/migrations` orqali quyidagi jadvallarni yarating: `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets`, `student_auth`, `student_sessions` — barchasida RLS yoqilgan, faqat admin (`is_admin()`) yozishi mumkin, `questions`/`results`/`app_secrets`/`student_auth`/`student_sessions` anon uchun umuman o'qilmaydi.
+1. `supabase/migrations` orqali quyidagi jadvallarni yarating: `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets`, `student_auth`, `student_sessions`, `teachers`, `teacher_subjects` — barchasida RLS yoqilgan; `questions`/`results` admin YOKI shu fanning o'qituvchisiga ochiq (`can_manage_subject()`/`is_teacher_for_subject()`), qolganlari `app_secrets`/`student_auth`/`student_sessions`/`teachers`/`teacher_subjects` kabi anon/authenticated uchun umuman yopiq (faqat RPC orqali).
 2. `app_secrets` jadvaliga `TG_TOKEN`, `TG_CHAT`, `ANSWER_PASS` qiymatlarini kiriting (faqat Edge Function'lar `service_role` orqali o'qiy oladi).
 3. Supabase Auth'da bitta admin foydalanuvchi yarating, uning UUID'sini `is_admin()` funksiyasiga yozing.
 4. `get-test`, `submit-result`, `reveal-answers`, `student-login`, `student-logout`, `student-me`, `student-change-pin` Edge Function'larini deploy qiling.
@@ -74,6 +74,14 @@ O'quvchilar "Mening kabinetim" bo'limida sinf + ism + shaxsiy 4 xonali PIN-kod b
 - **PIN berish**: Admin panel → Boshqarish → O'quvchilar → har bir ism yonidagi 🔑 tugmasi `admin_reset_student_pin` RPC'ni chaqiradi va yangi tasodifiy PIN'ni bir martalik ko'rsatadi (admin buni o'quvchiga og'zaki/qog'ozda beradi — PIN qayta hech qayerda ko'rinmaydi, faqat xeshi saqlanadi).
 - **Bloklash**: 5 marta xato PIN kiritilsa, hisob 15 daqiqaga bloklanadi (`student_auth.pin_attempts`/`pin_locked_until`).
 - **Ma'lumotlar izolyatsiyasi**: `student_auth` va `student_sessions` jadvallarida RLS yoqilgan, lekin hech qanday siyosat yo'q — na `anon`, na `authenticated` (admin) ularni to'g'ridan-to'g'ri o'qiy olmaydi, faqat `service_role` (Edge Function ichida) va `SECURITY DEFINER` RPC orqali kirish mumkin.
+
+## O'qituvchi paneli (fan bo'yicha cheklangan admin roli)
+
+Bitta super-admin (`ustozpro@ustozpro.local`) dan tashqari, admin panel orqali **fan o'qituvchilari** uchun ham hisob yaratish mumkin — har biri **faqat o'ziga biriktirilgan fan(lar)ni, barcha sinflar bo'yicha** ko'radi/boshqaradi (masalan "Matematika o'qituvchisi" 5–8-sinflarning barcha Matematika savol/natijalarini boshqaradi, boshqa fanlarga tegmaydi).
+
+- **Hisob yaratish**: Admin panel → Boshqarish → O'qituvchilar — ism, email, vaqtinchalik parol va fan(lar)ni belgilab qo'shasiz (`admin_create_teacher` RPC). Parolni keyinroq 🔑 tugmasi orqali tiklash, 🗑️ orqali hisobni butunlay o'chirish (login darhol ishlamay qoladi) mumkin.
+- **Kirish**: xuddi admin bilan bir xil login formasi (email + parol, Supabase Auth). Muvaffaqiyatli kirishdan so'ng frontend `is_admin()` va `get_my_teacher_info()` RPC'lari orqali "kim ekanini" aniqlaydi va shunga qarab UI'ni moslaydi (o'qituvchida Sinflar/O'quvchilar/Fanlar/Reyting/Sozlamalar/"Tozalash" — hammasi yashiriladi, faqat o'z fani bo'yicha Savollar va Natijalar qoladi).
+- **Haqiqiy xavfsizlik chegarasi — RLS, UI emas**: `questions` va `results` jadvallaridagi RLS siyosatlari `can_manage_subject()`/`is_teacher_for_subject()` funksiyalari orqali fan bo'yicha cheklangan — UI cheklovini devtools orqali chetlab o'tishga urinilsa ham, Postgres so'rovni to'g'ridan-to'g'ri rad etadi (`42501` xatosi). Reyting RPC'lari (`get_monthly_rating` va h.k.) ham DB darajasida faqat haqiqiy super-adminga qaytaradi, chunki ular butun sinf bo'yicha jamlangan ma'lumotni ko'rsatadi.
 
 ## Xavfsizlik
 

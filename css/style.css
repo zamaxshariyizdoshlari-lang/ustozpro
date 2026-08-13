@@ -161,6 +161,10 @@ body::before{content:'';position:fixed;inset:0;z-index:0;background:radial-gradi
 .form-control:focus{outline:none;border-color:var(--primary-light);box-shadow:var(--shadow-glow);background:var(--bg2)}
 .form-control option{background:white}
 textarea.form-control{height:auto;min-height:110px;padding:11px 14px;line-height:1.5;resize:vertical;font-family:'DM Mono',monospace;font-size:12px}
+.checkbox-pill-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.checkbox-pill{display:flex;align-items:center;gap:6px;padding:7px 13px;background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--r-full);font-size:12px;font-weight:600;cursor:pointer;user-select:none;transition:all var(--t-fast)}
+.checkbox-pill input{margin:0;accent-color:var(--primary)}
+.checkbox-pill.checked{background:var(--primary-pale);border-color:var(--border-active);color:var(--primary-dark)}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:13px}
 .divider{display:flex;align-items:center;gap:11px;margin:18px 0;color:var(--text-dim);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em}
 .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}

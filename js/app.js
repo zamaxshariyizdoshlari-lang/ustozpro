@@ -29,6 +29,9 @@ const DEFAULT_SUBJECTS = [
    STATE
 ═══════════════════════════════════════════════ */
 let adminLoggedIn = false;
+let teacherLoggedIn = false;
+let teacherSubjects = []; // faqat shu o'qituvchiga biriktirilgan fan nomlari
+let teacherName = '';
 let classesCache = [];   // [{id,name}]
 let allStudents  = [];   // [{id,class_id,full_name}]
 let allSubjects  = [];   // [{id,class_id,name}]
@@ -94,7 +97,7 @@ async function init() {
   applySettingsToTestSetup();
 
   const { data: { session } } = await supabaseClient.auth.getSession();
-  if (session) { adminLoggedIn = true; await showAdminDashboard(); }
+  if (session) { await resolveCurrentRole(); }
   applyAdminGates();
 
   await updateDashboardStats();
@@ -226,13 +229,35 @@ async function adminLogin() {
     setTimeout(()=>document.getElementById('adminPassInput').style.borderColor='',1500);
     return;
   }
-  adminLoggedIn = true;
-  await showAdminDashboard();
-  showToast('✅','Admin paneliga xush kelibsiz!','success','O\'qituvchi rejimida');
+  const role = await resolveCurrentRole();
+  if (role==='admin') showToast('✅','Admin paneliga xush kelibsiz!','success','O\'qituvchi rejimida');
+  else if (role==='teacher') showToast('✅',`Xush kelibsiz, ${teacherName}!`,'success',teacherSubjects.join(', '));
+  else showToast('❌','Bu hisob tizimda tanilmadi','error');
+}
+// Muvaffaqiyatli Supabase Auth kirishdan keyin (yoki sahifa qayta yuklanganda) "men kimman"ni
+// aniqlaydi: haqiqiy admin, fan o'qituvchisi, yoki hech biri (unda chiqarib yuboriladi).
+async function resolveCurrentRole() {
+  const { data: isAdminRes } = await supabaseClient.rpc('is_admin');
+  if (isAdminRes) {
+    adminLoggedIn = true; teacherLoggedIn = false; teacherSubjects = []; teacherName = '';
+    await showAdminDashboard();
+    return 'admin';
+  }
+  const { data: teacherRows } = await supabaseClient.rpc('get_my_teacher_info');
+  const info = teacherRows && teacherRows[0];
+  if (info && info.full_name) {
+    adminLoggedIn = false; teacherLoggedIn = true; teacherSubjects = info.subject_names || []; teacherName = info.full_name;
+    await showAdminDashboard();
+    return 'teacher';
+  }
+  await supabaseClient.auth.signOut();
+  adminLoggedIn = false; teacherLoggedIn = false; teacherSubjects = []; teacherName = '';
+  return null;
 }
 async function adminLogout() {
   await supabaseClient.auth.signOut();
   adminLoggedIn = false;
+  teacherLoggedIn = false; teacherSubjects = []; teacherName = '';
   document.getElementById('adminLoginSection').style.display = 'block';
   document.getElementById('adminDashboard').style.display   = 'none';
   document.getElementById('adminLoginInput').value = '';
@@ -240,29 +265,62 @@ async function adminLogout() {
   document.getElementById('sidebarUserName').textContent = 'Foydalanuvchi';
   document.getElementById('sidebarUserRole').textContent = 'O\'quvchi';
   applyAdminGates();
-  showToast('👋','Admin paneldan chiqdingiz','info');
+  showToast('👋','Paneldan chiqdingiz','info');
 }
 async function showAdminDashboard() {
   document.getElementById('adminLoginSection').style.display = 'none';
   document.getElementById('adminDashboard').style.display   = 'block';
-  document.getElementById('sidebarUserName').textContent = 'Admin';
-  document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
+  if (teacherLoggedIn) {
+    document.getElementById('sidebarUserName').textContent = teacherName;
+    document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
+    document.getElementById('adminPanelTitle').innerText = '👨‍🏫 O\'qituvchi paneli';
+    document.getElementById('adminPanelSubtitle').innerText = `Fan: ${teacherSubjects.join(', ')||'—'}`;
+  } else {
+    document.getElementById('sidebarUserName').textContent = 'Admin';
+    document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
+    document.getElementById('adminPanelTitle').innerText = '🔐 Admin Panel';
+    document.getElementById('adminPanelSubtitle').innerText = 'O\'qituvchi: Zamaxshariy Izdoshlari Maktabi';
+  }
   applyAdminGates();
+  applyAdminPanelRoleUI();
+  applyManageRoleUI();
   populateAdminFilters();
   await refreshAdminResults();
   renderResultsTable();
-  renderRatingPanel();
+  if (adminLoggedIn) renderRatingPanel();
   loadSettingsUI();
 }
 function applyAdminGates() {
+  const loggedIn = adminLoggedIn || teacherLoggedIn;
   const manageGate = document.getElementById('manageLoginGate');
   const manageContent = document.getElementById('manageContent');
   const syncGate = document.getElementById('syncLoginGate');
   const syncContent = document.getElementById('syncContent');
-  if (manageGate) manageGate.style.display = adminLoggedIn ? 'none' : 'block';
-  if (manageContent) manageContent.style.display = adminLoggedIn ? 'block' : 'none';
+  if (manageGate) manageGate.style.display = loggedIn ? 'none' : 'block';
+  if (manageContent) manageContent.style.display = loggedIn ? 'block' : 'none';
+  // Google Sheets ommaviy import — faqat admin (o'qituvchi uchun emas)
   if (syncGate) syncGate.style.display = adminLoggedIn ? 'none' : 'block';
   if (syncContent) syncContent.style.display = adminLoggedIn ? 'block' : 'none';
+  if (loggedIn) applyManageRoleUI();
+}
+// Boshqarish ekranida o'qituvchi uchun faqat "Savollar" tabini qoldiradi
+// (Sinflar/O'quvchilar/Fanlar/O'qituvchilar — admin-only roster boshqaruvi)
+function applyManageRoleUI() {
+  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
+  ['mtab-classes','mtab-students','mtab-subjects','mtab-teachers'].forEach(id=>{
+    const el = document.getElementById(id); if (el) el.style.display = teacherOnly ? 'none' : '';
+  });
+  if (teacherOnly) switchMTab('questions');
+}
+// Admin panelida o'qituvchi uchun faqat "Natijalar" tabini (o'z faniga cheklangan) qoldiradi
+function applyAdminPanelRoleUI() {
+  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
+  ['atab-rating','atab-settings'].forEach(id=>{
+    const el = document.getElementById(id); if (el) el.style.display = teacherOnly ? 'none' : '';
+  });
+  const clearBtn = document.getElementById('clearResultsBtn');
+  if (clearBtn) clearBtn.style.display = teacherOnly ? 'none' : '';
+  if (teacherOnly) switchATab('results');
 }
 function loadSettingsUI() {
   document.getElementById('settingMaxAttempts').value          = settings.max_attempts;
@@ -289,7 +347,8 @@ function switchATab(tab) {
 ═══════════════════════════════════════════════ */
 function populateAdminFilters() {
   const classes = classesCache.map(c=>c.name);
-  const allSubs = new Set(allSubjects.map(s=>s.name));
+  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
+  const allSubs = teacherOnly ? new Set(teacherSubjects) : new Set(allSubjects.map(s=>s.name));
 
   ['filterClass','ratingFilterClass'].forEach(id=>{
     const el = document.getElementById(id); if (!el) return;
@@ -780,6 +839,72 @@ async function resetStudentPin(id, name) {
 function closePinResultModal() { document.getElementById('pinResultOverlay').classList.add('hidden'); }
 
 /* ═══════════════════════════════════════════════
+   TEACHER MANAGEMENT (admin) — fan bo'yicha cheklangan o'qituvchi hisoblari
+═══════════════════════════════════════════════ */
+let teacherAddBusy = false;
+function renderTeacherSubjectCheckboxes() {
+  const box = document.getElementById('newTeacherSubjectsBox'); if (!box) return;
+  const names = [...new Set(allSubjects.map(s=>s.name))].sort();
+  box.innerHTML = names.map((n,i)=>`
+    <label class="checkbox-pill" id="teacherSubPill-${i}">
+      <input type="checkbox" value="${esc(n)}" onchange="document.getElementById('teacherSubPill-${i}').classList.toggle('checked',this.checked)">
+      ${esc(n)}
+    </label>`).join('');
+}
+async function addTeacher() {
+  if (teacherAddBusy) return;
+  const full_name = document.getElementById('newTeacherName').value.trim();
+  const email = document.getElementById('newTeacherEmail').value.trim();
+  const password = document.getElementById('newTeacherPassword').value;
+  const subject_names = [...document.querySelectorAll('#newTeacherSubjectsBox input:checked')].map(el=>el.value);
+  if (!full_name) { showToast('⚠️','To\'liq ismni kiriting!','warning'); return; }
+  if (!email || !email.includes('@')) { showToast('⚠️','To\'g\'ri email kiriting!','warning'); return; }
+  if (!password || password.length < 6) { showToast('⚠️','Parol kamida 6 belgidan iborat bo\'lsin!','warning'); return; }
+  if (subject_names.length===0) { showToast('⚠️','Kamida bitta fan tanlang!','warning'); return; }
+
+  teacherAddBusy = true;
+  const { error } = await supabaseClient.rpc('admin_create_teacher', { p_full_name: full_name, p_email: email, p_password: password, p_subject_names: subject_names });
+  teacherAddBusy = false;
+  if (error) {
+    const msg = error.message?.includes('duplicate') || error.code==='23505' ? 'Bu email allaqachon band!' : 'Xatolik yuz berdi';
+    showToast('❌', msg, 'error');
+    return;
+  }
+  document.getElementById('newTeacherName').value='';
+  document.getElementById('newTeacherEmail').value='';
+  document.getElementById('newTeacherPassword').value='';
+  renderTeacherSubjectCheckboxes();
+  await renderTeacherList();
+  showToast('✅',`"${full_name}" o'qituvchi sifatida qo'shildi!`,'success');
+}
+async function renderTeacherList() {
+  const list = document.getElementById('teacherList'); if (!list) return;
+  const { data, error } = await supabaseClient.rpc('admin_list_teachers');
+  if (error) { list.innerHTML = `<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
+  const teachers = data || [];
+  document.getElementById('teacherCount').innerText = teachers.length;
+  list.innerHTML = teachers.length===0
+    ? '<div class="empty-state">O\'qituvchilar yo\'q.</div>'
+    : teachers.map(t=>`<div class="list-item"><div class="li-icon">👨‍🏫</div><span class="li-text"><b>${esc(t.full_name)}</b> — ${esc(t.email)}<br><span style="color:var(--text-dim);font-size:11px">${(t.subject_names||[]).map(esc).join(', ')||'Fan biriktirilmagan'}</span></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="resetTeacherPassword('${t.id}','${t.full_name.replace(/'/g,"\\'")}')" title="Parolni tiklash">🔑</button><button class="li-del" onclick="removeTeacher('${t.id}','${t.full_name.replace(/'/g,"\\'")}')" title="O'chirish">🗑️</button></div></div>`).join('');
+}
+async function resetTeacherPassword(id, name) {
+  const newPass = prompt(`"${name}" uchun yangi parol kiriting (kamida 6 belgi):`);
+  if (!newPass) return;
+  if (newPass.length < 6) { showToast('⚠️','Parol kamida 6 belgidan iborat bo\'lsin!','warning'); return; }
+  const { error } = await supabaseClient.rpc('admin_reset_teacher_password', { p_teacher_id: id, p_new_password: newPass });
+  if (error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  showToast('✅',`"${name}" paroli yangilandi`,'success');
+}
+async function removeTeacher(id, name) {
+  const ok = await askTypeConfirm(`"${name}" o'qituvchini o'chirish`, `Uning hisobi butunlay o'chadi, login endi ishlamaydi.`, name);
+  if (!ok) return;
+  const { error } = await supabaseClient.rpc('admin_delete_teacher', { p_teacher_id: id });
+  if (error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  await renderTeacherList();
+  showToast('🗑️',`"${name}" o'chirildi.`,'info');
+}
+
+/* ═══════════════════════════════════════════════
    SUBJECT MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
 async function addSubject() {
@@ -831,7 +956,9 @@ function onQClassChange() {
   cancelEditQuestion();
   const cls = classesCache.find(c=>c.name===clsName);
   if (!cls) return;
-  qs.innerHTML='<option value="">— Fanni tanlang —</option>'+subjectsForClass(cls.id).map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
+  const opts = teacherOnly ? subjectsForClass(cls.id).filter(s=>teacherSubjects.includes(s.name)) : subjectsForClass(cls.id);
+  qs.innerHTML='<option value="">— Fanni tanlang —</option>'+opts.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
 }
 async function renderQuestionList() {
   const subjectId=document.getElementById('qSubject')?.value;
@@ -976,12 +1103,13 @@ async function bulkAddQuestions() {
    MANAGE TABS
 ═══════════════════════════════════════════════ */
 function switchMTab(tab) {
-  ['classes','students','subjects','questions'].forEach(t=>{
+  ['classes','students','subjects','questions','teachers'].forEach(t=>{
     document.getElementById(`mtab-${t}`)?.classList.toggle('active',t===tab);
     document.getElementById(`mpanel-${t}`)?.classList.toggle('active',t===tab);
   });
   if (tab==='students') renderStudentList();
   if (tab==='subjects') renderSubjectList();
+  if (tab==='teachers') { renderTeacherSubjectCheckboxes(); renderTeacherList(); }
 }
 
 /* ═══════════════════════════════════════════════

@@ -281,8 +281,8 @@
         <div id="adminDashboard" style="display:none">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
             <div>
-              <div class="section-title" style="font-size:20px">🔐 Admin Panel</div>
-              <div style="font-size:12px;color:var(--text-dim);margin-top:2px">O'qituvchi: Zamaxshariy Izdoshlari Maktabi</div>
+              <div class="section-title" style="font-size:20px" id="adminPanelTitle">🔐 Admin Panel</div>
+              <div style="font-size:12px;color:var(--text-dim);margin-top:2px" id="adminPanelSubtitle">O'qituvchi: Zamaxshariy Izdoshlari Maktabi</div>
             </div>
             <button class="btn btn-secondary btn-sm" onclick="adminLogout()">↩ Chiqish</button>
           </div>
@@ -306,7 +306,7 @@
             <div class="export-btns">
               <button class="btn btn-success btn-sm" onclick="exportToExcel()">📥 Excel</button>
               <button class="btn btn-danger btn-sm" onclick="exportToPDF()">📄 PDF</button>
-              <button class="btn btn-secondary btn-sm" onclick="clearAllResults()">🗑️ Tozalash</button>
+              <button class="btn btn-secondary btn-sm" id="clearResultsBtn" onclick="clearAllResults()">🗑️ Tozalash</button>
             </div>
             <div class="rating-table-wrap">
               <table class="rating-tbl" id="resultsTable">
@@ -431,6 +431,7 @@
           <button class="mtab" id="mtab-students" onclick="switchMTab('students')">👥 O'quvchilar</button>
           <button class="mtab" id="mtab-subjects" onclick="switchMTab('subjects')">📖 Fanlar</button>
           <button class="mtab" id="mtab-questions" onclick="switchMTab('questions')">❓ Savollar</button>
+          <button class="mtab" id="mtab-teachers" onclick="switchMTab('teachers')">👨‍🏫 O'qituvchilar</button>
         </div>
 
         <div class="manage-panel active" id="mpanel-classes">
@@ -513,6 +514,24 @@
             <div class="sec-head"><h4>Savollar ro'yxati</h4><span class="badge" id="questionCount">0</span></div>
             <div class="form-group"><input type="text" class="form-control" id="qSearchInput" placeholder="🔍 Savol matni bo'yicha qidirish..." oninput="renderFilteredQuestions()"></div>
             <div id="questionListArea"></div>
+          </div>
+        </div>
+
+        <div class="manage-panel" id="mpanel-teachers">
+          <div class="setup-card">
+            <div class="setup-card-header"><div class="setup-card-icon">👨‍🏫</div><div><div class="setup-card-title">O'qituvchi qo'shish</div><div class="setup-card-subtitle">Email, vaqtinchalik parol va fan(lar)ni belgilang</div></div></div>
+            <div class="form-group"><label class="form-label">To'liq ism</label><input type="text" class="form-control" id="newTeacherName" placeholder="Ism Familiya"></div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">Email</label><input type="email" class="form-control" id="newTeacherEmail" placeholder="masalan@ustozpro.local"></div>
+              <div class="form-group"><label class="form-label">Vaqtinchalik parol</label><input type="text" class="form-control" id="newTeacherPassword" placeholder="Kamida 6 belgi"></div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Fan(lar)</label>
+              <div id="newTeacherSubjectsBox" class="checkbox-pill-list"></div>
+            </div>
+            <button class="btn btn-primary btn-md btn-full" onclick="addTeacher()">+ O'qituvchi qo'shish</button>
+            <div class="sec-head"><h4>O'qituvchilar ro'yxati</h4><span class="badge" id="teacherCount">0</span></div>
+            <div id="teacherList"></div>
           </div>
         </div>
         </div><!-- /manageContent -->
