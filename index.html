@@ -12,7 +12,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- Supabase JS client -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=2">
 </head>
 <body>
 
@@ -437,9 +437,10 @@
             <div class="setup-card-header"><div class="setup-card-icon">🏫</div><div><div class="setup-card-title">Yangi sinf qo'shish</div></div></div>
             <div class="form-row">
               <div class="form-group"><label class="form-label">Sinf nomi</label><input type="text" class="form-control" id="newClassName" placeholder="Masalan: 9-sinf" onkeydown="if(event.key==='Enter')addClass()"></div>
-              <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-md btn-full" onclick="addClass()">+ Qo'shish</button></div>
+              <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-md btn-full" id="addClassBtn" onclick="addClass()">+ Qo'shish</button></div>
             </div>
             <div class="sec-head"><h4>Mavjud sinflar</h4><span class="badge" id="classCount">0</span></div>
+            <div class="form-group"><input type="text" class="form-control" id="classSearchInput" placeholder="🔍 Sinf nomi bo'yicha qidirish..." oninput="renderClassList()"></div>
             <div id="classList"></div>
           </div>
         </div>
@@ -450,9 +451,10 @@
             <div class="form-group"><label class="form-label">Sinf tanlang</label><select class="form-control select" id="manageClass" onchange="renderStudentList();renderSubjectList()"><option value="">— Sinfni tanlang —</option></select></div>
             <div class="form-row">
               <div class="form-group"><label class="form-label">O'quvchi ismi</label><input type="text" class="form-control" id="newStudentName" placeholder="Ism Familiya" onkeydown="if(event.key==='Enter')addStudent()"></div>
-              <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-md btn-full" onclick="addStudent()">+ Qo'shish</button></div>
+              <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-md btn-full" id="addStudentBtn" onclick="addStudent()">+ Qo'shish</button></div>
             </div>
             <div class="sec-head"><h4>O'quvchilar ro'yxati</h4><span class="badge" id="studentCount">0</span></div>
+            <div class="form-group"><input type="text" class="form-control" id="studentSearchInput" placeholder="🔍 Ism bo'yicha qidirish..." oninput="renderStudentList()"></div>
             <div id="studentList"></div>
           </div>
         </div>
@@ -463,16 +465,17 @@
             <div class="form-group"><label class="form-label">Sinf tanlang</label><select class="form-control select" id="manageClassSub" onchange="renderSubjectList()"><option value="">— Sinfni tanlang —</option></select></div>
             <div class="form-row">
               <div class="form-group"><label class="form-label">Fan nomi</label><input type="text" class="form-control" id="newSubName" placeholder="Masalan: Algebra" onkeydown="if(event.key==='Enter')addSubject()"></div>
-              <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-md btn-full" onclick="addSubject()">+ Qo'shish</button></div>
+              <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-md btn-full" id="addSubjectBtn" onclick="addSubject()">+ Qo'shish</button></div>
             </div>
             <div class="sec-head"><h4>Fanlar ro'yxati</h4><span class="badge" id="subjectCount">0</span></div>
+            <div class="form-group"><input type="text" class="form-control" id="subjectSearchInput" placeholder="🔍 Fan nomi bo'yicha qidirish..." oninput="renderSubjectList()"></div>
             <div id="subjectList"></div>
           </div>
         </div>
 
         <div class="manage-panel" id="mpanel-questions">
           <div class="setup-card">
-            <div class="setup-card-header"><div class="setup-card-icon">❓</div><div><div class="setup-card-title">Savol qo'shish</div><div class="setup-card-subtitle">Savollar bazasi endi shu yerdan boshqariladi</div></div></div>
+            <div class="setup-card-header"><div class="setup-card-icon">❓</div><div><div class="setup-card-title" id="qFormTitle">Savol qo'shish</div><div class="setup-card-subtitle">Savollar bazasi endi shu yerdan boshqariladi</div></div></div>
             <div class="form-row">
               <div class="form-group"><label class="form-label">Sinf</label><select class="form-control select" id="qClass" onchange="onQClassChange()"><option value="">— Sinfni tanlang —</option></select></div>
               <div class="form-group"><label class="form-label">Fan</label><select class="form-control select" id="qSubject" onchange="renderQuestionList()"><option value="">— Avval sinfni tanlang —</option></select></div>
@@ -495,8 +498,19 @@
               </div>
               <div class="form-group"><label class="form-label">Izoh (ixtiyoriy)</label><input type="text" class="form-control" id="newQHint" placeholder="Yordamchi izoh"></div>
             </div>
-            <button class="btn btn-primary btn-md btn-full" onclick="addQuestion()">+ Savol qo'shish</button>
+            <div class="form-row">
+              <button class="btn btn-primary btn-md btn-full" id="qSaveBtn" onclick="saveQuestion()">+ Savol qo'shish</button>
+              <button class="btn btn-secondary btn-md" id="qCancelEditBtn" style="display:none" onclick="cancelEditQuestion()">✕ Bekor qilish</button>
+            </div>
+
+            <div class="divider">ommaviy qo'shish</div>
+            <div class="info-note" style="margin-bottom:10px">💡 Har bir savolni alohida qatorga yozing: <b>Savol | A | B | C | D | To'g'ri(a/b/c/d) | Izoh</b>. C, D va izoh ixtiyoriy.</div>
+            <textarea class="form-control" id="bulkQText" rows="5" placeholder="Masalan:&#10;Poytaxtimiz qaysi shahar? | Toshkent | Samarqand | Buxoro | Andijon | a | &#10;2+2 nechaga teng? | 3 | 4 | 5 | 6 | b | Oddiy qo'shish"></textarea>
+            <button class="btn btn-success btn-md btn-full" style="margin-top:10px" id="bulkQBtn" onclick="bulkAddQuestions()">📥 Ommaviy qo'shish</button>
+            <div id="bulkQStatusBox" style="margin-top:10px;display:none"></div>
+
             <div class="sec-head"><h4>Savollar ro'yxati</h4><span class="badge" id="questionCount">0</span></div>
+            <div class="form-group"><input type="text" class="form-control" id="qSearchInput" placeholder="🔍 Savol matni bo'yicha qidirish..." oninput="renderFilteredQuestions()"></div>
             <div id="questionListArea"></div>
           </div>
         </div>
@@ -532,6 +546,18 @@
   </div><!-- /main-content -->
 </div><!-- /app-shell -->
 
+<!-- TYPE-TO-CONFIRM MODAL (halokatli amallar uchun) -->
+<div class="lock-modal-overlay hidden" id="typeConfirmOverlay">
+  <div class="lock-modal">
+    <span class="lock-icon">⚠️</span>
+    <div class="lock-title" id="typeConfirmTitle">Tasdiqlash</div>
+    <div class="lock-desc" id="typeConfirmDesc">Bu amalni orqaga qaytarib bo'lmaydi.</div>
+    <input type="text" class="lock-input" id="typeConfirmInput" placeholder="" onkeydown="if(event.key==='Enter')submitTypeConfirm()">
+    <button class="btn btn-danger btn-full btn-md" onclick="submitTypeConfirm()">🗑️ Tasdiqlash va o'chirish</button>
+    <button class="btn btn-secondary btn-full btn-sm" style="margin-top:8px" onclick="closeTypeConfirm()">Bekor qilish</button>
+  </div>
+</div>
+
 <!-- ANSWER LOCK MODAL -->
 <div class="lock-modal-overlay hidden" id="answerLockOverlay">
   <div class="lock-modal">
@@ -544,7 +570,7 @@
   </div>
 </div>
 
-<script src="js/config.js"></script>
-<script src="js/app.js"></script>
+<script src="js/config.js?v=2"></script>
+<script src="js/app.js?v=2"></script>
 </body>
 </html>

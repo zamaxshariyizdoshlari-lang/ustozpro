@@ -34,6 +34,11 @@ let allStudents  = [];   // [{id,class_id,full_name}]
 let allSubjects  = [];   // [{id,class_id,name}]
 let adminResults = [];   // [{id,student_name,class_name,subject_name,score,total,percent,cheat_count,elapsed_seconds,created_at}]
 let allQuestions = [];   // questions currently shown in the "Savollar" manage tab
+let editingQuestionId = null; // savol tahrirlash rejimida bo'lsa, tahrirlanayotgan savol id'si
+let questionSaveBusy = false;
+let classAddBusy = false;
+let studentAddBusy = false;
+let subjectAddBusy = false;
 
 let settings = {
   max_attempts: 3,
@@ -171,6 +176,40 @@ function showToast(icon, title, type='info', sub='', duration=3500) {
 }
 
 /* ═══════════════════════════════════════════════
+   TYPE-TO-CONFIRM MODAL — halokatli amallar uchun
+═══════════════════════════════════════════════ */
+let typeConfirmResolve = null;
+let typeConfirmExpected = '';
+function askTypeConfirm(title, desc, expected) {
+  return new Promise(resolve => {
+    typeConfirmResolve = resolve;
+    typeConfirmExpected = expected;
+    document.getElementById('typeConfirmTitle').innerText = title;
+    document.getElementById('typeConfirmDesc').innerText = `${desc} Tasdiqlash uchun quyidagi maydonga aynan "${expected}" deb yozing:`;
+    const inp = document.getElementById('typeConfirmInput');
+    inp.value=''; inp.placeholder=expected; inp.classList.remove('error');
+    document.getElementById('typeConfirmOverlay').classList.remove('hidden');
+    setTimeout(()=>inp.focus(),100);
+  });
+}
+function submitTypeConfirm() {
+  const inp = document.getElementById('typeConfirmInput');
+  if (inp.value.trim() !== typeConfirmExpected) {
+    inp.classList.add('error'); setTimeout(()=>inp.classList.remove('error'),600);
+    showToast('⚠️','Yozilgan matn mos kelmadi','warning');
+    return;
+  }
+  document.getElementById('typeConfirmOverlay').classList.add('hidden');
+  const resolve = typeConfirmResolve; typeConfirmResolve = null;
+  if (resolve) resolve(true);
+}
+function closeTypeConfirm() {
+  document.getElementById('typeConfirmOverlay').classList.add('hidden');
+  const resolve = typeConfirmResolve; typeConfirmResolve = null;
+  if (resolve) resolve(false);
+}
+
+/* ═══════════════════════════════════════════════
    ADMIN AUTH (Supabase Auth)
 ═══════════════════════════════════════════════ */
 async function adminLogin() {
@@ -304,79 +343,52 @@ function renderResultsTable() {
    RATING SYSTEM
    1200 ballik (Mutolaa tashqari) + 2000 ballik Mutolaa
 ═══════════════════════════════════════════════ */
-function renderRatingPanel() {
+async function renderRatingPanel() {
   const fcls = document.getElementById('ratingFilterClass')?.value||'';
   const fsub = document.getElementById('ratingFilterSub')?.value||'';
-  let rows = adminResults||[];
-  if (fcls) rows = rows.filter(r=>r.class_name===fcls);
 
-  const mutolaaRows    = rows.filter(r=>r.subject_name==='Mutolaa');
-  const nonMutolaaRows = rows.filter(r=>r.subject_name!=='Mutolaa');
-
-  const nonMutSubjects = new Set(nonMutolaaRows.map(r=>r.subject_name));
-  const totalNonMutTests = nonMutSubjects.size;
-
-  const coeff  = totalNonMutTests > 0 ? (1200 / totalNonMutTests) : 0;
-  const mutSubjects = new Set(mutolaaRows.map(r=>r.subject_name));
-  const mutTotal = mutSubjects.size || 1;
-  const mutCoeff = 2000 / mutTotal;
+  // Reyting hisob-kitobi endi serverda (Postgres RPC) bajariladi —
+  // barcha natijalarni brauzerga tortib client'da hisoblash o'rniga.
+  const [{ data: formulaRows }, { data: monthlyArr }, { data: mutArr }] = await Promise.all([
+    supabaseClient.rpc('get_rating_formula_info', { p_class: fcls || null }),
+    supabaseClient.rpc('get_monthly_rating', { p_class: fcls || null, p_subject: fsub || null }),
+    supabaseClient.rpc('get_mutolaa_rating', { p_class: fcls || null }),
+  ]);
+  const formula = (formulaRows && formulaRows[0]) || { total_non_mut_subjects:0, coeff:0, mut_total:1, mut_coeff:2000 };
 
   const infoEl = document.getElementById('ratingFormulaInfo');
   if (infoEl) {
     infoEl.innerHTML = `
       <div class="info-note" style="margin-bottom:11px">
-        📊 Jami fanlar (Mutolaa tashqari): <b>${totalNonMutTests}</b> ·
-        Koeffitsiyent: <b>1200 / ${totalNonMutTests} = ${coeff.toFixed(2)}</b> ·
-        Mutolaa koeffitsiyenti: <b>2000 / ${mutTotal} = ${mutCoeff.toFixed(2)}</b>
+        📊 Jami fanlar (Mutolaa tashqari): <b>${formula.total_non_mut_subjects}</b> ·
+        Koeffitsiyent: <b>1200 / ${formula.total_non_mut_subjects} = ${Number(formula.coeff).toFixed(2)}</b> ·
+        Mutolaa koeffitsiyenti: <b>2000 / ${formula.mut_total} = ${Number(formula.mut_coeff).toFixed(2)}</b>
       </div>`;
   }
 
-  const studentMap = {};
-  nonMutolaaRows.forEach(r=>{
-    if (fcls && r.class_name!==fcls) return;
-    if (fsub && r.subject_name!==fsub) return;
-    const key = `${r.student_name}__${r.class_name}`;
-    if (!studentMap[key]) studentMap[key] = {name:r.student_name, cls:r.class_name, totalCorrect:0};
-    studentMap[key].totalCorrect += (r.score||0);
-  });
-  const monthlyArr = Object.values(studentMap)
-    .map(s=>({...s, ratingScore: Math.round(s.totalCorrect * coeff)}))
-    .sort((a,b)=>b.ratingScore-a.ratingScore);
-
   const monthlyBody = document.getElementById('monthlyRatingBody');
   if (monthlyBody) {
-    if (monthlyArr.length===0) {
+    if (!monthlyArr || monthlyArr.length===0) {
       monthlyBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:22px;color:var(--text-dim)">Ma\'lumot yo\'q</td></tr>';
     } else {
       monthlyBody.innerHTML = monthlyArr.map((s,i)=>{
         const rankClass = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'';
         const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
-        const scoreClass = s.ratingScore>=800?'high':s.ratingScore>=400?'mid':'low';
+        const scoreClass = s.rating_score>=800?'high':s.rating_score>=400?'mid':'low';
         return `<tr>
           <td class="rank-cell ${rankClass}">${medal||i+1}</td>
-          <td><b>${esc(s.name)}</b></td>
-          <td>${esc(s.cls)}</td>
-          <td style="font-family:'DM Mono',monospace">${s.totalCorrect} ta</td>
-          <td><span class="score-chip ${scoreClass}">${s.ratingScore}</span></td>
+          <td><b>${esc(s.student_name)}</b></td>
+          <td>${esc(s.class_name)}</td>
+          <td style="font-family:'DM Mono',monospace">${s.total_correct} ta</td>
+          <td><span class="score-chip ${scoreClass}">${s.rating_score}</span></td>
         </tr>`;
       }).join('');
     }
   }
 
-  const mutStudentMap = {};
-  mutolaaRows.forEach(r=>{
-    if (fcls && r.class_name!==fcls) return;
-    const key = `${r.student_name}__${r.class_name}`;
-    if (!mutStudentMap[key]) mutStudentMap[key] = {name:r.student_name, cls:r.class_name, mutCorrect:0};
-    mutStudentMap[key].mutCorrect += (r.score||0);
-  });
-  const mutArr = Object.values(mutStudentMap)
-    .map(s=>({...s, mutScore:Math.round(s.mutCorrect * mutCoeff)}))
-    .sort((a,b)=>b.mutScore-a.mutScore);
-
   const mutBody = document.getElementById('mutolaaRatingBody');
   if (mutBody) {
-    if (mutArr.length===0) {
+    if (!mutArr || mutArr.length===0) {
       mutBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:22px;color:var(--text-dim)">Mutolaa natijalari yo\'q</td></tr>';
     } else {
       mutBody.innerHTML = mutArr.map((s,i)=>{
@@ -384,10 +396,10 @@ function renderRatingPanel() {
         const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
         return `<tr>
           <td class="rank-cell ${rankClass}">${medal||i+1}</td>
-          <td><b>${esc(s.name)}</b></td>
-          <td>${esc(s.cls)}</td>
-          <td style="font-family:'DM Mono',monospace">${s.mutCorrect} ta</td>
-          <td><span class="mutolaa-badge">📖 ${s.mutScore}</span></td>
+          <td><b>${esc(s.student_name)}</b></td>
+          <td>${esc(s.class_name)}</td>
+          <td style="font-family:'DM Mono',monospace">${s.mut_correct} ta</td>
+          <td><span class="mutolaa-badge">📖 ${s.mut_score}</span></td>
         </tr>`;
       }).join('');
     }
@@ -446,7 +458,8 @@ function exportToPDF() {
 }
 
 async function clearAllResults() {
-  if (!confirm('Barcha natijalarni o\'chirasizmi? Bu amalni orqaga qaytarib bo\'lmaydi!')) return;
+  const ok = await askTypeConfirm('Barcha natijalarni o\'chirish', 'BARCHA o\'quvchilarning BARCHA test natijalari butunlay o\'chadi.', 'OCHIRISH');
+  if (!ok) return;
   const { error } = await supabaseClient.from('results').delete().neq('id','00000000-0000-0000-0000-000000000000');
   if (error) { showToast('❌','O\'chirishda xatolik','error'); return; }
   adminResults = [];
@@ -597,7 +610,9 @@ async function syncData() {
     const res=await fetch(url);
     const csv=await res.text();
     const rows=csv.split('\n').slice(1);
-    let count=0, errCount=0;
+
+    // 1) Qatorlarni tahlil qilib normalizatsiya qilamiz (bir nechta sinfli qatorlar kengaytiriladi)
+    const parsed = [];
     for (const row of rows) {
       if (!row.trim()) continue;
       const cols=parseCSVLine(row);
@@ -605,19 +620,42 @@ async function syncData() {
       const [sinf,fan,q,a,b,c,d,cr,hint]=cols;
       if (!sinf||!fan||!q) continue;
       for (const clsName of expandClassNames(sinf)) {
-        try {
-          const clsId = await getOrCreateClass(clsName);
-          const subjId = await getOrCreateSubject(clsId, fan);
-          const { error } = await supabaseClient.from('questions').insert({
-            subject_id: subjId, question_text: q,
-            option_a:a||'', option_b:b||'', option_c:c||'', option_d:d||'',
-            correct_option: (cr||'').toLowerCase().trim() || 'a',
-            hint: hint||''
-          });
-          if (error) errCount++; else count++;
-        } catch(e) { errCount++; }
+        parsed.push({ clsName, fan, q, a:a||'', b:b||'', c:c||'', d:d||'', cr:(cr||'').toLowerCase().trim()||'a', hint:hint||'' });
       }
     }
+
+    // 2) Har bir sinf/fan faqat bir marta yaratiladi (avval N marta takroriy so'rov bo'lardi)
+    const classIdCache = {};
+    for (const clsName of [...new Set(parsed.map(p=>p.clsName))]) {
+      try { classIdCache[clsName] = await getOrCreateClass(clsName); } catch(e) { /* qatorlar keyin xato hisoblanadi */ }
+    }
+    const subjectIdCache = {};
+    for (const p of parsed) {
+      const clsId = classIdCache[p.clsName];
+      if (!clsId) continue;
+      const key = `${clsId}__${p.fan}`;
+      if (!(key in subjectIdCache)) {
+        try { subjectIdCache[key] = await getOrCreateSubject(clsId, p.fan); } catch(e) { subjectIdCache[key] = null; }
+      }
+    }
+
+    // 3) Savollarni guruh (batch) holida qo'shamiz — bitta-bitta insert o'rniga
+    const questionRows = [];
+    let errCount = 0;
+    for (const p of parsed) {
+      const clsId = classIdCache[p.clsName];
+      const subjId = clsId ? subjectIdCache[`${clsId}__${p.fan}`] : null;
+      if (!subjId) { errCount++; continue; }
+      questionRows.push({ subject_id: subjId, question_text:p.q, option_a:p.a, option_b:p.b, option_c:p.c, option_d:p.d, correct_option:p.cr, hint:p.hint });
+    }
+    let count=0;
+    const CHUNK=500;
+    for (let i=0;i<questionRows.length;i+=CHUNK) {
+      const chunk = questionRows.slice(i,i+CHUNK);
+      const { error } = await supabaseClient.from('questions').insert(chunk);
+      if (error) errCount+=chunk.length; else count+=chunk.length;
+    }
+
     await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
     populateClassSelects();
     const box=document.getElementById('syncStatusBox');
@@ -655,18 +693,27 @@ function updateTestUI() {
   }
 }
 async function addClass() {
+  if (classAddBusy) return;
   const name=document.getElementById('newClassName').value.trim();
   if (!name){showToast('⚠️','Sinf nomini kiriting!','warning');return;}
+  classAddBusy = true;
+  const btn = document.getElementById('addClassBtn'); if (btn) btn.disabled = true;
   const { data, error } = await supabaseClient.from('classes').insert({ name }).select().single();
-  if (error) { showToast('⚠️', error.code==='23505'?'Bu sinf allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
+  if (error) {
+    showToast('⚠️', error.code==='23505'?'Bu sinf allaqachon mavjud!':'Xatolik yuz berdi','warning');
+    classAddBusy = false; if (btn) btn.disabled = false;
+    return;
+  }
   await supabaseClient.from('subjects').insert(DEFAULT_SUBJECTS.map(s=>({class_id:data.id,name:s})));
   await Promise.all([refreshClasses(), refreshAllSubjects()]);
   populateClassSelects(); renderClassList();
   document.getElementById('newClassName').value='';
   showToast('✅',`"${name}" sinfi qo'shildi!`,'success'); updateDashboardStats();
+  classAddBusy = false; if (btn) btn.disabled = false;
 }
 async function removeClass(id,name) {
-  if (!confirm(`"${name}" sinfini o'chirasizmi? (Uning barcha o'quvchi, fan va savollari ham o'chadi)`)) return;
+  const ok = await askTypeConfirm(`"${name}" sinfini o'chirish`, `Bu sinfning barcha o'quvchi, fan va savollari ham o'chadi.`, name);
+  if (!ok) return;
   const { error } = await supabaseClient.from('classes').delete().eq('id', id);
   if (error) { showToast('❌','O\'chirishda xatolik','error'); return; }
   await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
@@ -675,21 +722,27 @@ async function removeClass(id,name) {
 }
 function renderClassList() {
   document.getElementById('classCount').innerText=classesCache.length;
-  document.getElementById('classList').innerHTML=classesCache.length===0
-    ?`<div class="empty-state">Sinflar yo'q. Yangi sinf qo'shing.</div>`
-    :classesCache.map(c=>`<div class="list-item"><div class="li-icon">🏫</div><span class="li-text"><b>${esc(c.name)}</b> — ${studentsForClass(c.id).length} o'quvchi</span><button class="li-del" onclick="removeClass('${c.id}','${c.name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
+  const term=(document.getElementById('classSearchInput')?.value||'').trim().toLowerCase();
+  const list = term ? classesCache.filter(c=>c.name.toLowerCase().includes(term)) : classesCache;
+  document.getElementById('classList').innerHTML=list.length===0
+    ?`<div class="empty-state">${term?'Qidiruv bo\'yicha sinf topilmadi.':'Sinflar yo\'q. Yangi sinf qo\'shing.'}</div>`
+    :list.map(c=>`<div class="list-item"><div class="li-icon">🏫</div><span class="li-text"><b>${esc(c.name)}</b> — ${studentsForClass(c.id).length} o'quvchi</span><button class="li-del" onclick="removeClass('${c.id}','${c.name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
 }
 
 /* ═══════════════════════════════════════════════
    STUDENT MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
 async function addStudent() {
+  if (studentAddBusy) return;
   const clsName=document.getElementById('manageClass').value;
   const name=document.getElementById('newStudentName').value.trim();
   if (!clsName){showToast('⚠️','Avval sinfni tanlang!','warning');return;}
   if (!name){showToast('⚠️','O\'quvchi ismini kiriting!','warning');return;}
+  studentAddBusy = true;
+  const btn = document.getElementById('addStudentBtn'); if (btn) btn.disabled = true;
   const cls = classesCache.find(c=>c.name===clsName);
   const { error } = await supabaseClient.from('students').insert({ class_id: cls.id, full_name: name });
+  studentAddBusy = false; if (btn) btn.disabled = false;
   if (error) { showToast('⚠️', error.code==='23505'?'Bu o\'quvchi allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
   await refreshAllStudents();
   renderStudentList(); renderClassList();
@@ -708,21 +761,27 @@ function renderStudentList() {
   const cls = classesCache.find(c=>c.name===clsName);
   const students = cls ? studentsForClass(cls.id) : [];
   document.getElementById('studentCount').innerText=students.length;
-  document.getElementById('studentList').innerHTML=students.length===0
-    ?`<div class="empty-state">${cls?'O\'quvchilar yo\'q.':'Sinfni tanlang.'}</div>`
-    :students.map(s=>`<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${esc(s.full_name)}</span><button class="li-del" onclick="removeStudent('${s.id}','${s.full_name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
+  const term=(document.getElementById('studentSearchInput')?.value||'').trim().toLowerCase();
+  const list = term ? students.filter(s=>s.full_name.toLowerCase().includes(term)) : students;
+  document.getElementById('studentList').innerHTML=list.length===0
+    ?`<div class="empty-state">${term?'Qidiruv bo\'yicha o\'quvchi topilmadi.':(cls?'O\'quvchilar yo\'q.':'Sinfni tanlang.')}</div>`
+    :list.map(s=>`<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${esc(s.full_name)}</span><button class="li-del" onclick="removeStudent('${s.id}','${s.full_name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
 }
 
 /* ═══════════════════════════════════════════════
    SUBJECT MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
 async function addSubject() {
+  if (subjectAddBusy) return;
   const clsName=document.getElementById('manageClassSub')?.value;
   const name=document.getElementById('newSubName').value.trim();
   if (!clsName){showToast('⚠️','Avval sinfni tanlang!','warning');return;}
   if (!name){showToast('⚠️','Fan nomini kiriting!','warning');return;}
+  subjectAddBusy = true;
+  const btn = document.getElementById('addSubjectBtn'); if (btn) btn.disabled = true;
   const cls = classesCache.find(c=>c.name===clsName);
   const { error } = await supabaseClient.from('subjects').insert({ class_id: cls.id, name });
+  subjectAddBusy = false; if (btn) btn.disabled = false;
   if (error) { showToast('⚠️', error.code==='23505'?'Bu fan allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
   await refreshAllSubjects();
   renderSubjectList();
@@ -742,9 +801,11 @@ function renderSubjectList() {
   const subs = cls ? subjectsForClass(cls.id) : [];
   const el=document.getElementById('subjectList'); if (!el) return;
   document.getElementById('subjectCount').innerText=subs.length;
-  el.innerHTML=subs.length===0
-    ?`<div class="empty-state">${cls?'Fanlar yo\'q.':'Sinfni tanlang.'}</div>`
-    :subs.map(s=>`<div class="list-item"><div class="li-icon">📖</div><span class="li-text">${esc(s.name)}</span><button class="li-del" onclick="removeSubject('${s.id}','${s.name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
+  const term=(document.getElementById('subjectSearchInput')?.value||'').trim().toLowerCase();
+  const list = term ? subs.filter(s=>s.name.toLowerCase().includes(term)) : subs;
+  el.innerHTML=list.length===0
+    ?`<div class="empty-state">${term?'Qidiruv bo\'yicha fan topilmadi.':(cls?'Fanlar yo\'q.':'Sinfni tanlang.')}</div>`
+    :list.map(s=>`<div class="list-item"><div class="li-icon">📖</div><span class="li-text">${esc(s.name)}</span><button class="li-del" onclick="removeSubject('${s.id}','${s.name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
 }
 
 /* ═══════════════════════════════════════════════
@@ -756,6 +817,7 @@ function onQClassChange() {
   qs.innerHTML='<option value="">— Avval sinfni tanlang —</option>';
   document.getElementById('questionListArea').innerHTML='';
   document.getElementById('questionCount').innerText='0';
+  cancelEditQuestion();
   const cls = classesCache.find(c=>c.name===clsName);
   if (!cls) return;
   qs.innerHTML='<option value="">— Fanni tanlang —</option>'+subjectsForClass(cls.id).map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
@@ -763,16 +825,59 @@ function onQClassChange() {
 async function renderQuestionList() {
   const subjectId=document.getElementById('qSubject')?.value;
   const area=document.getElementById('questionListArea');
-  if (!subjectId) { area.innerHTML=''; document.getElementById('questionCount').innerText='0'; return; }
+  cancelEditQuestion();
+  const searchEl=document.getElementById('qSearchInput'); if (searchEl) searchEl.value='';
+  if (!subjectId) { area.innerHTML=''; document.getElementById('questionCount').innerText='0'; allQuestions=[]; return; }
   const { data, error } = await supabaseClient.from('questions').select('*').eq('subject_id', subjectId).order('created_at');
   if (error) { area.innerHTML=`<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
   allQuestions = data||[];
-  document.getElementById('questionCount').innerText=allQuestions.length;
-  area.innerHTML=allQuestions.length===0
-    ?`<div class="empty-state">Bu fan uchun savollar yo'q.</div>`
-    :allQuestions.map(q=>`<div class="list-item"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><button class="li-del" onclick="removeQuestion('${q.id}')">🗑️</button></div>`).join('');
+  renderFilteredQuestions();
 }
-async function addQuestion() {
+function renderFilteredQuestions() {
+  const area=document.getElementById('questionListArea');
+  const term=(document.getElementById('qSearchInput')?.value||'').trim().toLowerCase();
+  document.getElementById('questionCount').innerText=allQuestions.length;
+  const list = term ? allQuestions.filter(q=>q.question_text.toLowerCase().includes(term)) : allQuestions;
+  area.innerHTML=list.length===0
+    ?`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`
+    :list.map(q=>`<div class="list-item ${editingQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="editQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="removeQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('');
+}
+function editQuestion(id) {
+  const q = allQuestions.find(x=>x.id===id);
+  if (!q) return;
+  editingQuestionId = id;
+  document.getElementById('newQText').value = q.question_text||'';
+  document.getElementById('newQA').value = q.option_a||'';
+  document.getElementById('newQB').value = q.option_b||'';
+  document.getElementById('newQC').value = q.option_c||'';
+  document.getElementById('newQD').value = q.option_d||'';
+  document.getElementById('newQCorrect').value = q.correct_option||'a';
+  document.getElementById('newQHint').value = q.hint||'';
+  updateQuestionFormMode();
+  document.getElementById('newQText').scrollIntoView({behavior:'smooth',block:'center'});
+  renderFilteredQuestions();
+}
+function cancelEditQuestion() {
+  if (!editingQuestionId) return;
+  editingQuestionId = null;
+  ['newQText','newQA','newQB','newQC','newQD','newQHint'].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
+  const correctEl=document.getElementById('newQCorrect'); if (correctEl) correctEl.value='a';
+  updateQuestionFormMode();
+}
+function updateQuestionFormMode() {
+  const btn=document.getElementById('qSaveBtn'), cancelBtn=document.getElementById('qCancelEditBtn'), title=document.getElementById('qFormTitle');
+  if (editingQuestionId) {
+    if (btn) btn.innerText='💾 Yangilash';
+    if (cancelBtn) cancelBtn.style.display='';
+    if (title) title.innerText='Savolni tahrirlash';
+  } else {
+    if (btn) btn.innerText="+ Savol qo'shish";
+    if (cancelBtn) cancelBtn.style.display='none';
+    if (title) title.innerText="Savol qo'shish";
+  }
+}
+async function saveQuestion() {
+  if (questionSaveBusy) return;
   const subjectId=document.getElementById('qSubject')?.value;
   const text=document.getElementById('newQText').value.trim();
   const a=document.getElementById('newQA').value.trim();
@@ -783,22 +888,77 @@ async function addQuestion() {
   const hint=document.getElementById('newQHint').value.trim();
   if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
   if (!text||!a||!b) { showToast('⚠️','Savol matni va kamida A/B variantlarini kiriting!','warning'); return; }
-  const { error } = await supabaseClient.from('questions').insert({
-    subject_id: subjectId, question_text: text,
-    option_a:a, option_b:b, option_c:c, option_d:d,
-    correct_option: correct, hint
-  });
+  questionSaveBusy = true;
+  const btn=document.getElementById('qSaveBtn'); if (btn) btn.disabled=true;
+  const payload = { subject_id: subjectId, question_text: text, option_a:a, option_b:b, option_c:c, option_d:d, correct_option: correct, hint };
+  const wasEdit = !!editingQuestionId;
+  const { error } = wasEdit
+    ? await supabaseClient.from('questions').update(payload).eq('id', editingQuestionId)
+    : await supabaseClient.from('questions').insert(payload);
+  questionSaveBusy = false; if (btn) btn.disabled=false;
   if (error) { showToast('❌','Saqlashda xatolik','error'); return; }
+  editingQuestionId = null;
   ['newQText','newQA','newQB','newQC','newQD','newQHint'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('newQCorrect').value='a';
+  updateQuestionFormMode();
   await renderQuestionList();
-  showToast('✅','Savol qo\'shildi!','success');
+  showToast('✅', wasEdit?'Savol yangilandi!':'Savol qo\'shildi!','success');
 }
 async function removeQuestion(id) {
   if (!confirm('Bu savolni o\'chirasizmi?')) return;
   const { error } = await supabaseClient.from('questions').delete().eq('id', id);
   if (error) { showToast('❌','Xatolik','error'); return; }
+  if (editingQuestionId===id) cancelEditQuestion();
   await renderQuestionList();
   showToast('🗑️','Savol o\'chirildi.','info');
+}
+
+/* ═══════════════════════════════════════════════
+   BULK ADD QUESTIONS — Sheets'siz, matn orqali ommaviy kiritish
+   Format: Savol | A | B | C | D | to'g'ri(a/b/c/d) | Izoh
+═══════════════════════════════════════════════ */
+let bulkAddBusy = false;
+async function bulkAddQuestions() {
+  if (bulkAddBusy) return;
+  const subjectId=document.getElementById('qSubject')?.value;
+  const raw = document.getElementById('bulkQText').value;
+  if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
+  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  if (lines.length===0) { showToast('⚠️','Matn bo\'sh!','warning'); return; }
+
+  const rows = [];
+  const badLines = [];
+  lines.forEach((line,idx)=>{
+    const parts = line.split('|').map(p=>p.trim());
+    if (parts.length<6) { badLines.push(idx+1); return; }
+    const [q,a,b,c,d,cr,...hintParts] = parts;
+    const correct = (cr||'').toLowerCase();
+    if (!q||!a||!b||!['a','b','c','d'].includes(correct)) { badLines.push(idx+1); return; }
+    rows.push({
+      subject_id: subjectId, question_text:q, option_a:a, option_b:b, option_c:c||'', option_d:d||'',
+      correct_option:correct, hint:hintParts.join('|').trim()
+    });
+  });
+
+  const box=document.getElementById('bulkQStatusBox');
+  if (rows.length===0) {
+    if (box) { box.style.display='block'; box.innerHTML=`<div style="padding:13px;background:var(--danger-pale);border:1px solid rgba(220,38,38,0.2);border-radius:var(--r-sm);font-size:12px;color:#991b1b">❌ To'g'ri formatdagi qator topilmadi. Format: Savol | A | B | C | D | to'g'ri(a/b/c/d) | Izoh</div>`; }
+    return;
+  }
+
+  bulkAddBusy = true;
+  const btn=document.getElementById('bulkQBtn'); if (btn) btn.disabled=true;
+  const { error } = await supabaseClient.from('questions').insert(rows);
+  bulkAddBusy = false; if (btn) btn.disabled=false;
+
+  if (error) { showToast('❌','Saqlashda xatolik yuz berdi','error'); return; }
+  document.getElementById('bulkQText').value='';
+  if (box) {
+    box.style.display='block';
+    box.innerHTML=`<div style="padding:13px;background:var(--success-pale);border:1px solid rgba(5,150,105,0.2);border-radius:var(--r-sm);font-size:12px;color:#065f46">✅ <b>${rows.length}</b> ta savol qo'shildi${badLines.length?`, ${badLines.length} ta qator (${badLines.join(', ')}-qator) noto'g'ri formatda bo'lgani uchun o'tkazib yuborildi`:''}.</div>`;
+  }
+  await renderQuestionList();
+  showToast('✅','Ommaviy qo\'shish tugadi!','success',`${rows.length} ta savol qo'shildi`);
 }
 
 /* ═══════════════════════════════════════════════
@@ -856,6 +1016,18 @@ async function startTest() {
   const name = document.getElementById('sName').value;
 
   if (!cls||!sub||!name){showToast('⚠️','Barcha maydonlarni to\'ldiring!','warning');return;}
+
+  // Boshqa o'quvchining tugallanmagan sessiyasini bilmasdan o'chirib yubormaslik uchun ogohlantirish
+  const danglingRaw = localStorage.getItem('ustoz_pro_session_v4');
+  if (danglingRaw) {
+    try {
+      const dangling = JSON.parse(danglingRaw);
+      if (dangling.studentName && dangling.studentName !== name) {
+        const ok = confirm(`Diqqat: "${dangling.studentName}" ismli o'quvchining tugallanmagan testi bor edi. Yangi test boshlansa, u butunlay o'chadi. Baribir davom etasizmi?`);
+        if (!ok) return;
+      }
+    } catch(e) { /* buzilgan sessiya — e'tiborsiz qoldiramiz */ }
+  }
 
   const count = settings.allow_custom ? (parseInt(document.getElementById('sCount').value)||15) : settings.question_count;
   const mins  = settings.allow_custom ? (parseInt(document.getElementById('sTime').value)||20)  : settings.time_limit_minutes;

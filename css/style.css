@@ -160,6 +160,7 @@ body::before{content:'';position:fixed;inset:0;z-index:0;background:radial-gradi
 .form-control.select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 13px center;background-color:var(--bg);padding-right:40px;cursor:pointer}
 .form-control:focus{outline:none;border-color:var(--primary-light);box-shadow:var(--shadow-glow);background:var(--bg2)}
 .form-control option{background:white}
+textarea.form-control{height:auto;min-height:110px;padding:11px 14px;line-height:1.5;resize:vertical;font-family:'DM Mono',monospace;font-size:12px}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:13px}
 .divider{display:flex;align-items:center;gap:11px;margin:18px 0;color:var(--text-dim);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em}
 .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}

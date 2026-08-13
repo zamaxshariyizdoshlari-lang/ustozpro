@@ -7,7 +7,7 @@
       "runtimeArgs": [
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-File", "C:\\Temp\\claude\\C--Users-Acer-Servis-Ustozpro\\f266b7a2-434a-48df-bc30-c946e81c351e\\scratchpad\\serve.ps1",
+        "-File", "C:\\Temp\\claude\\C--Users-Acer-Servis-Ustozpro\\5354069b-875e-4ee7-acc9-e2f0b747d8dc\\scratchpad\\serve.ps1",
         "-Root", "C:\\Users\\Acer_Servis\\Ustozpro",
         "-Port", "8080"
       ],

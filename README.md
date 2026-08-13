@@ -5,13 +5,15 @@ Zamaxshariy Izdoshlari Maktabi uchun o'quvchilarni test qilish, natijalarni saql
 ## Arxitektura
 
 - **Frontend**: statik sayt, hech qanday build qadam kerak emas.
-- **Baza**: Supabase Postgres — `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets` jadvallari, barchasi Row Level Security bilan himoyalangan.
+- **Baza**: Supabase Postgres — `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets` jadvallari, barchasi Row Level Security bilan himoyalangan. Sxema `supabase/migrations/` papkasida versiyalangan.
 - **Auth**: Supabase Auth (email/parol) — bitta admin akkaunt, `is_admin()` funksiyasi orqali RLS siyosatlariga bog'langan.
-- **Edge Functions** (`supabase/functions/` — Supabase loyihasida joylashgan, bu repoda emas):
+- **Edge Functions** (`supabase/functions/` — bu repoda ham saqlanadi, Supabase loyihasiga alohida deploy qilinadi):
   - `get-test` — tanlangan sinf/fan uchun savollarni **to'g'ri javobsiz** qaytaradi va urinishlar limitini tekshiradi.
   - `submit-result` — javoblarni serverda baholaydi, natijani bazaga yozadi, Telegram xabarnomasini yuboradi (bot tokeni faqat serverda).
   - `reveal-answers` — o'qituvchi paroli tekshirilgach, to'g'ri javoblarni qaytaradi.
-  - `bootstrap-admin` — bir martalik admin yaratish funksiyasi (endi o'chirilgan/neytrallashtirilgan).
+- **Reyting hisob-kitobi** (`get_monthly_rating`, `get_mutolaa_rating`, `get_rating_formula_info`) — Postgres RPC funksiyalari sifatida serverda hisoblanadi (admin panel butun natijalar jadvalini brauzerga tortib olib client'da hisoblamaydi).
+
+> ⚠️ **Eslatma**: `supabase/migrations/` da o'quvchi/sinf/fan **seed (namunaviy) ma'lumotlari yo'q** — chunki bu repo public, va haqiqiy o'quvchi ismlari (F.I.Sh.) shaxsiy ma'lumot hisoblanadi. Ular faqat Supabase bazasida saqlanadi, GitHub'ga hech qachon yuklanmaydi.
 
 Bu arxitektura tufayli **to'g'ri javoblar, admin paroli va Telegram tokeni hech qachon brauzerga to'liq jo'natilmaydi** — hammasi server tomonida (Edge Function ichida, `service_role` kaliti bilan) ishlanadi.
 
@@ -69,6 +71,11 @@ Ikki yo'l bor:
 - Test paytida savollar `get-test` orqali **to'g'ri javobsiz** yuboriladi; baholash `submit-result`da serverda amalga oshadi.
 - "To'g'ri javoblarni ko'rish" paroli ham serverda (`reveal-answers`) tekshiriladi — parol noto'g'ri bo'lsa hech qanday javob qaytmaydi.
 - Admin autentifikatsiyasi haqiqiy Supabase Auth orqali; RLS siyosatlari faqat bitta belgilangan admin UUID'siga yozishga ruxsat beradi (boshqa birov `signUp` qilsa ham yozolmaydi).
+- Reyting RPC funksiyalari (`get_monthly_rating` va h.k.) faqat `authenticated` (admin) uchun ochiq — `anon` foydalanuvchi ularni chaqira olmaydi (Supabase Security Advisor orqali tasdiqlangan).
+
+### Bitta ixtiyoriy xavfsizlik yaxshilanishi (hozircha qo'llanilmagan)
+
+Supabase'ning **"Leaked password protection"** (HaveIBeenPwned.org bazasi orqali parol tekshiruvi) funksiyasi faqat **Pro Plan va undan yuqori** tarifda mavjud, Free tarifda Dashboard'da umuman ko'rinmaydi. Loyiha hozir Free tarifda ishlaydi va bitta admin akkaunti bo'lgani uchun bu ayni damda kritik emas. Agar kelajakda Pro Plan'ga o'tilsa, buni Dashboard → Authentication → Sign In / Providers → Email → Password Security bo'limidan yoqish mumkin.
 
 ## Texnologiyalar
 
