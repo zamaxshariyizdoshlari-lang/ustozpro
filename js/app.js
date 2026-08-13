@@ -1,5 +1,23 @@
 /* ═══════════════════════════════════════════════
-   DEFAULT DATA
+   SUPABASE CLIENT
+═══════════════════════════════════════════════ */
+const supabaseClient = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+
+async function callEdgeFunction(name, body) {
+  const res = await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/${name}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`,
+      'apikey': CONFIG.SUPABASE_ANON_KEY
+    },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+/* ═══════════════════════════════════════════════
+   DEFAULT SUBJECTS — yangi sinf yaratilganda avtomatik biriktiriladi
 ═══════════════════════════════════════════════ */
 const DEFAULT_SUBJECTS = [
   "Tarix","Turk tili","Geografiya","Mutolaa","Koreys tili","Xitoy tili",
@@ -7,84 +25,104 @@ const DEFAULT_SUBJECTS = [
   "Tabiiy fan","Fizika","Arab tili","Rus tili"
 ];
 
-const DEFAULT_STUDENTS = {
-  "5-sinf": ["Yo'ldoshaliyev Abdulahad","Nabijonova Sitora","Abdumutaliyeva Asalxon","Usmonxo'jayeva Diyoraxon","Bekmirzayev Otabek","Hakimjonov Hamidullo","Rustamova Malikaxon","Usmonaliyev Alisher","Musajonov Hojimurod","Alijonov Islombek","Imomova Xushnoza","Nu'monova Madina","Sobirov Muhammadbobur","Zuxriddinova Yasminaxon","Inomjonov Ibrohim","Bannonov Abdulloh","Saidmo'minova Muhsinaxon","Muhammadolimov Fahriddin","Odiljonova Muslimaxon"],
-  "6-sinf": ["Nosirjonova Layloxon","Muhammadaliyeva Sevaraxon","Mamasoliyeva Hadicha","To'lqinjonova Shahzoda","Mamasoliyeva Mubina","Qo'shoqboyev Muhammadaziz","Mansurjonov Hojakbar","Soliyev Shamsiddin","G'ulomjonov Muhammaddiyor","Soliyev Ziyovuddin","Rustamjonova Rayxona","Alijonov Anasxon","Yusufjonova Fotimaxon","Mamadnosirov G'olibjon","Odiljonova Salomatxon","Abdulazizova Nozimaxon"],
-  "7-sinf": ["Yo'ldoshaliyeva Farzona","Abdullayev Muslimbek","Adhamov Jahongir","Muxtorov Abdulloh","Adhamjonov Muhammadyusuf","Ergashboyev Abdulloh","Abdumutalov Abdulbosit","Akramjonov Murodillo","Ashuraliyev Ilhomjon","Omonaliyev Muhammad","Bahodirov Saidabror","Alijonov Mus'ab","Kamoliddinov Shamshodbek","Bahriddinov Muhammadjon","Nuraliyev Muhammadyasin","Xoshimjonov Dovudbek","Ibrohimov Islomjon"],
-  "8-sinf": ["Rustamova Mushtariy","Usmonaliyev Sanjarbek","Zokirjonova Zahroxon","Nurmatova Mohinabonu","Mamasoliyeva Arofatxon","Mirzajonov Fayzulloh","Zafarjonov Behruzbek","Oʻlmasova Mohichehra","Valijonova Zeboxon","Lazizxonova Oyshabonu","Tursunov Aliy","Qodirov Bobomurod","Inomjonova Umidaxon","Ortiqboyeva Malikaxon","Adhamjonov Muhammadsaid","Qodirova Sarvinoz","Abdulazizov Mashrabbek"]
-};
-
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
-let db = (() => {
-  try { return JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY)) || {}; } catch(e) { return {}; }
-})();
-
 let adminLoggedIn = false;
+let classesCache = [];   // [{id,name}]
+let allStudents  = [];   // [{id,class_id,full_name}]
+let allSubjects  = [];   // [{id,class_id,name}]
+let adminResults = [];   // [{id,student_name,class_name,subject_name,score,total,percent,cheat_count,elapsed_seconds,created_at}]
+let allQuestions = [];   // questions currently shown in the "Savollar" manage tab
 
-let testState = {
-  questions:[], bookmarks:new Set(), cheats:0,
-  startTime:null, totalSecs:0, remainingSecs:0, timerInterval:null,
-  studentName:'', className:'', subjectName:'',
-  lastReview: []   // kept for answer reveal
+let settings = {
+  max_attempts: 3,
+  question_count: 15,
+  time_limit_minutes: 20,
+  allow_custom: true,
+  enable_attempt_limit: false
 };
 
-// Settings (admin-controlled)
-let settings = (() => {
-  try { return JSON.parse(localStorage.getItem(CONFIG.SETTINGS_KEY)) || {}; } catch(e) { return {}; }
-})();
-settings = Object.assign({
-  maxAttempts: 3,
-  questionCount: 15,
-  timeLimit: 20,
-  allowCustom: true,
-  enableAttemptLimit: false
-}, settings);
+let testState = {
+  questions: [], bookmarks: new Set(), cheats: 0,
+  startTime: null, totalSecs: 0, remainingSecs: 0, timerInterval: null,
+  studentName: '', className: '', subjectName: '',
+  lastAnswers: {},       // {questionId: 'a'|'b'|'c'|'d'}
+  lastWrongReview: []    // [{question_text, selected_text}] — filled after submit-result
+};
+
+function studentsForClass(classId) { return allStudents.filter(s => s.class_id === classId); }
+function subjectsForClass(classId) { return allSubjects.filter(s => s.class_id === classId); }
+function classIdByName(name) { return classesCache.find(c => c.name === name)?.id; }
+
+/* ═══════════════════════════════════════════════
+   DATA REFRESH
+═══════════════════════════════════════════════ */
+async function refreshClasses() {
+  const { data } = await supabaseClient.from('classes').select('id,name').order('name');
+  classesCache = data || [];
+}
+async function refreshAllStudents() {
+  const { data } = await supabaseClient.from('students').select('id,class_id,full_name').order('full_name');
+  allStudents = data || [];
+}
+async function refreshAllSubjects() {
+  const { data } = await supabaseClient.from('subjects').select('id,class_id,name').order('name');
+  allSubjects = data || [];
+}
+async function refreshAdminResults() {
+  const { data } = await supabaseClient.from('results').select('*').order('created_at', { ascending: false });
+  adminResults = data || [];
+}
+async function loadSettings() {
+  const { data } = await supabaseClient.from('settings').select('*').eq('id', 1).single();
+  if (data) settings = data;
+}
 
 /* ═══════════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════════ */
-function initDefaults() {
-  if (!db.classes)  db.classes  = {};
-  if (!db.subjects) db.subjects = {};
-  if (!db.results)  db.results  = [];
-  if (!db.qs)       db.qs       = {};
-  ['5-sinf','6-sinf','7-sinf','8-sinf'].forEach(cls => {
-    if (!db.classes[cls])  db.classes[cls]  = DEFAULT_STUDENTS[cls] || [];
-    if (!db.subjects[cls]) db.subjects[cls] = [...DEFAULT_SUBJECTS];
-  });
-  saveDB();
-}
-function saveDB() { localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(db)); }
-function saveSettings() {
-  settings.maxAttempts        = parseInt(document.getElementById('settingMaxAttempts')?.value)||3;
-  settings.questionCount      = parseInt(document.getElementById('settingQuestionCount')?.value)||15;
-  settings.timeLimit          = parseInt(document.getElementById('settingTimeLimit')?.value)||20;
-  settings.allowCustom        = document.getElementById('settingAllowCustom')?.checked||false;
-  settings.enableAttemptLimit = document.getElementById('settingEnableAttemptLimit')?.checked||false;
-  localStorage.setItem(CONFIG.SETTINGS_KEY, JSON.stringify(settings));
+async function init() {
+  await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects(), loadSettings()]);
+  populateClassSelects();
+  renderClassList();
   applySettingsToTestSetup();
+
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (session) { adminLoggedIn = true; await showAdminDashboard(); }
+  applyAdminGates();
+
+  await updateDashboardStats();
+  renderRecentResults();
+  checkForResumeSession();
+}
+init();
+
+function saveSettings() {
+  const updated = {
+    max_attempts: parseInt(document.getElementById('settingMaxAttempts')?.value) || 3,
+    question_count: parseInt(document.getElementById('settingQuestionCount')?.value) || 15,
+    time_limit_minutes: parseInt(document.getElementById('settingTimeLimit')?.value) || 20,
+    allow_custom: document.getElementById('settingAllowCustom')?.checked || false,
+    enable_attempt_limit: document.getElementById('settingEnableAttemptLimit')?.checked || false
+  };
+  supabaseClient.from('settings').update(updated).eq('id', 1).then(({ error }) => {
+    if (error) { showToast('❌', 'Sozlamalarni saqlashda xatolik', 'error'); return; }
+    settings = { ...settings, ...updated };
+    applySettingsToTestSetup();
+  });
 }
 function applySettingsToTestSetup() {
-  const allowed = settings.allowCustom;
+  const allowed = settings.allow_custom;
   const controls = document.getElementById('testSetupControls');
   const note = document.getElementById('adminSettingsNote');
   const noteText = document.getElementById('adminSettingsNoteText');
   if (controls) controls.style.display = allowed ? '' : 'none';
   if (note) {
     note.style.display = allowed ? 'none' : 'flex';
-    if (noteText) noteText.textContent = `Savol soni: ${settings.questionCount} ta · Vaqt: ${settings.timeLimit} daqiqa (admin tomonidan belgilangan)`;
+    if (noteText) noteText.textContent = `Savol soni: ${settings.question_count} ta · Vaqt: ${settings.time_limit_minutes} daqiqa (admin tomonidan belgilangan)`;
   }
 }
-
-initDefaults();
-populateClassSelects();
-renderClassList();
-updateDashboardStats();
-renderRecentResults();
-applySettingsToTestSetup();
-checkForResumeSession();
 
 /* ═══════════════════════════════════════════════
    NAVIGATION
@@ -96,7 +134,7 @@ const SCREENS = {
   'result':     { screen:'screen-result',     nav:'nav-test',   title:'Natijalar',        bc:'Test natijalari' },
   'admin':      { screen:'screen-admin',      nav:'nav-admin',  title:'Admin Panel',      bc:'Admin boshqaruvi' },
   'manage':     { screen:'screen-manage',     nav:'nav-manage', title:'Boshqarish',       bc:'Sinflar va o\'quvchilar' },
-  'sync':       { screen:'screen-sync',       nav:'nav-sync',   title:'Bazani yangilash', bc:'Google Sheets sinxronizatsiya' }
+  'sync':       { screen:'screen-sync',       nav:'nav-sync',   title:'Bazani yangilash', bc:'Google Sheets import' }
 };
 function navigateTo(page) {
   const cfg = SCREENS[page]; if (!cfg) return;
@@ -106,9 +144,10 @@ function navigateTo(page) {
   document.getElementById(cfg.nav)?.classList.add('active');
   document.getElementById('topbarTitle').innerText = cfg.title;
   document.getElementById('topbarBreadcrumb').innerHTML = `<span>Ustoz Pro</span> › <span>${cfg.bc}</span>`;
-  if (page==='manage') syncManageSelects();
+  if (page==='manage') { applyAdminGates(); if (adminLoggedIn) syncManageSelects(); }
+  if (page==='sync') applyAdminGates();
   if (page==='home') { updateDashboardStats(); renderRecentResults(); }
-  if (page==='admin' && adminLoggedIn) { populateAdminFilters(); renderResultsTable(); renderRatingPanel(); }
+  if (page==='admin' && adminLoggedIn) { populateAdminFilters(); refreshAdminResults().then(()=>{renderResultsTable(); renderRatingPanel();}); }
   closeSidebar(); window.scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -132,29 +171,26 @@ function showToast(icon, title, type='info', sub='', duration=3500) {
 }
 
 /* ═══════════════════════════════════════════════
-   ADMIN AUTH
+   ADMIN AUTH (Supabase Auth)
 ═══════════════════════════════════════════════ */
-function adminLogin() {
-  const login = document.getElementById('adminLoginInput').value.trim();
-  const pass  = document.getElementById('adminPassInput').value;
-  if (login===CONFIG.ADMIN_LOGIN && pass===CONFIG.ADMIN_PASS) {
-    adminLoggedIn = true;
-    document.getElementById('adminLoginSection').style.display = 'none';
-    document.getElementById('adminDashboard').style.display   = 'block';
-    document.getElementById('sidebarUserName').textContent = 'Admin';
-    document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
-    populateAdminFilters();
-    renderResultsTable();
-    renderRatingPanel();
-    loadSettingsUI();
-    showToast('✅','Admin paneliga xush kelibsiz!','success','O\'qituvchi rejimida');
-  } else {
+async function adminLogin() {
+  const loginRaw = document.getElementById('adminLoginInput').value.trim();
+  const pass = document.getElementById('adminPassInput').value;
+  const email = (!loginRaw || loginRaw === CONFIG.ADMIN_LOGIN_HINT || !loginRaw.includes('@')) ? CONFIG.ADMIN_EMAIL : loginRaw;
+
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password: pass });
+  if (error) {
     document.getElementById('adminPassInput').style.borderColor='var(--danger)';
     showToast('❌','Login yoki parol noto\'g\'ri!','error');
     setTimeout(()=>document.getElementById('adminPassInput').style.borderColor='',1500);
+    return;
   }
+  adminLoggedIn = true;
+  await showAdminDashboard();
+  showToast('✅','Admin paneliga xush kelibsiz!','success','O\'qituvchi rejimida');
 }
-function adminLogout() {
+async function adminLogout() {
+  await supabaseClient.auth.signOut();
   adminLoggedIn = false;
   document.getElementById('adminLoginSection').style.display = 'block';
   document.getElementById('adminDashboard').style.display   = 'none';
@@ -162,14 +198,37 @@ function adminLogout() {
   document.getElementById('adminPassInput').value  = '';
   document.getElementById('sidebarUserName').textContent = 'Foydalanuvchi';
   document.getElementById('sidebarUserRole').textContent = 'O\'quvchi';
+  applyAdminGates();
   showToast('👋','Admin paneldan chiqdingiz','info');
 }
+async function showAdminDashboard() {
+  document.getElementById('adminLoginSection').style.display = 'none';
+  document.getElementById('adminDashboard').style.display   = 'block';
+  document.getElementById('sidebarUserName').textContent = 'Admin';
+  document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
+  applyAdminGates();
+  populateAdminFilters();
+  await refreshAdminResults();
+  renderResultsTable();
+  renderRatingPanel();
+  loadSettingsUI();
+}
+function applyAdminGates() {
+  const manageGate = document.getElementById('manageLoginGate');
+  const manageContent = document.getElementById('manageContent');
+  const syncGate = document.getElementById('syncLoginGate');
+  const syncContent = document.getElementById('syncContent');
+  if (manageGate) manageGate.style.display = adminLoggedIn ? 'none' : 'block';
+  if (manageContent) manageContent.style.display = adminLoggedIn ? 'block' : 'none';
+  if (syncGate) syncGate.style.display = adminLoggedIn ? 'none' : 'block';
+  if (syncContent) syncContent.style.display = adminLoggedIn ? 'block' : 'none';
+}
 function loadSettingsUI() {
-  document.getElementById('settingMaxAttempts').value        = settings.maxAttempts;
-  document.getElementById('settingQuestionCount').value      = settings.questionCount;
-  document.getElementById('settingTimeLimit').value          = settings.timeLimit;
-  document.getElementById('settingAllowCustom').checked      = settings.allowCustom;
-  document.getElementById('settingEnableAttemptLimit').checked = settings.enableAttemptLimit;
+  document.getElementById('settingMaxAttempts').value          = settings.max_attempts;
+  document.getElementById('settingQuestionCount').value        = settings.question_count;
+  document.getElementById('settingTimeLimit').value            = settings.time_limit_minutes;
+  document.getElementById('settingAllowCustom').checked        = settings.allow_custom;
+  document.getElementById('settingEnableAttemptLimit').checked = settings.enable_attempt_limit;
 }
 
 /* ═══════════════════════════════════════════════
@@ -188,9 +247,8 @@ function switchATab(tab) {
    ADMIN FILTERS
 ═══════════════════════════════════════════════ */
 function populateAdminFilters() {
-  const classes = Object.keys(db.classes);
-  const allSubs = new Set();
-  Object.values(db.subjects).forEach(a=>a.forEach(s=>allSubs.add(s)));
+  const classes = classesCache.map(c=>c.name);
+  const allSubs = new Set(allSubjects.map(s=>s.name));
 
   ['filterClass','ratingFilterClass'].forEach(id=>{
     const el = document.getElementById(id); if (!el) return;
@@ -205,14 +263,20 @@ function populateAdminFilters() {
 }
 
 /* ═══════════════════════════════════════════════
-   RESULTS TABLE
+   FORMAT HELPERS
+═══════════════════════════════════════════════ */
+function fmtElapsed(sec) { if (sec==null) return '—'; const m=Math.floor(sec/60), s=sec%60; return `${m}:${s<10?'0'+s:s}`; }
+function fmtDate(iso) { return iso ? new Date(iso).toLocaleString('uz-UZ') : '—'; }
+
+/* ═══════════════════════════════════════════════
+   RESULTS TABLE (admin)
 ═══════════════════════════════════════════════ */
 function renderResultsTable() {
   const fcls = document.getElementById('filterClass')?.value||'';
   const fsub = document.getElementById('filterSubject')?.value||'';
-  let rows = db.results||[];
-  if (fcls) rows = rows.filter(r=>r.cls===fcls);
-  if (fsub) rows = rows.filter(r=>r.sub===fsub);
+  let rows = adminResults||[];
+  if (fcls) rows = rows.filter(r=>r.class_name===fcls);
+  if (fsub) rows = rows.filter(r=>r.subject_name===fsub);
   const tbody = document.getElementById('resultsTableBody');
   if (!tbody) return;
   if (rows.length===0) {
@@ -224,14 +288,14 @@ function renderResultsTable() {
     const cls = pct>=70?'high':pct>=50?'mid':'low';
     return `<tr>
       <td class="rank-cell">${i+1}</td>
-      <td><b>${esc(r.name)}</b></td>
-      <td>${esc(r.cls)}</td>
-      <td>${esc(r.sub)}</td>
+      <td><b>${esc(r.student_name)}</b></td>
+      <td>${esc(r.class_name)}</td>
+      <td>${esc(r.subject_name)}</td>
       <td>${r.score}/${r.total}</td>
       <td><span class="score-chip ${cls}">${pct}%</span></td>
-      <td style="font-family:'DM Mono',monospace;font-size:12px">${r.elapsed||'—'}</td>
-      <td style="color:${r.cheat>0?'var(--danger)':'var(--success)'};font-weight:700">${r.cheat||0}</td>
-      <td style="font-size:11px;color:var(--text-dim)">${r.time||'—'}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:12px">${fmtElapsed(r.elapsed_seconds)}</td>
+      <td style="color:${r.cheat_count>0?'var(--danger)':'var(--success)'};font-weight:700">${r.cheat_count||0}</td>
+      <td style="font-size:11px;color:var(--text-dim)">${fmtDate(r.created_at)}</td>
     </tr>`;
   }).join('');
 }
@@ -243,24 +307,20 @@ function renderResultsTable() {
 function renderRatingPanel() {
   const fcls = document.getElementById('ratingFilterClass')?.value||'';
   const fsub = document.getElementById('ratingFilterSub')?.value||'';
-  let rows = db.results||[];
-  if (fcls) rows = rows.filter(r=>r.cls===fcls);
+  let rows = adminResults||[];
+  if (fcls) rows = rows.filter(r=>r.class_name===fcls);
 
-  // Mutolaa va non-Mutolaa alohida
-  const mutolaaRows   = rows.filter(r=>r.sub==='Mutolaa');
-  const nonMutolaaRows = rows.filter(r=>r.sub!=='Mutolaa');
+  const mutolaaRows    = rows.filter(r=>r.subject_name==='Mutolaa');
+  const nonMutolaaRows = rows.filter(r=>r.subject_name!=='Mutolaa');
 
-  // Jami noyob testlar soni (sub bo'yicha, Mutolaa tashqari)
-  const nonMutSubjects = new Set(nonMutolaaRows.map(r=>r.sub));
+  const nonMutSubjects = new Set(nonMutolaaRows.map(r=>r.subject_name));
   const totalNonMutTests = nonMutSubjects.size;
 
-  // Koeffitsiyent
   const coeff  = totalNonMutTests > 0 ? (1200 / totalNonMutTests) : 0;
-  const mutSubjects = new Set(mutolaaRows.map(r=>r.sub));
+  const mutSubjects = new Set(mutolaaRows.map(r=>r.subject_name));
   const mutTotal = mutSubjects.size || 1;
   const mutCoeff = 2000 / mutTotal;
 
-  // Formula info
   const infoEl = document.getElementById('ratingFormulaInfo');
   if (infoEl) {
     infoEl.innerHTML = `
@@ -271,13 +331,12 @@ function renderRatingPanel() {
       </div>`;
   }
 
-  // Monthly rating: har o'quvchi uchun barcha non-Mutolaa fanlardagi to'g'ri javoblar yig'indisi
   const studentMap = {};
   nonMutolaaRows.forEach(r=>{
-    if (fcls && r.cls!==fcls) return;
-    if (fsub && r.sub!==fsub) return;
-    const key = `${r.name}__${r.cls}`;
-    if (!studentMap[key]) studentMap[key] = {name:r.name, cls:r.cls, totalCorrect:0};
+    if (fcls && r.class_name!==fcls) return;
+    if (fsub && r.subject_name!==fsub) return;
+    const key = `${r.student_name}__${r.class_name}`;
+    if (!studentMap[key]) studentMap[key] = {name:r.student_name, cls:r.class_name, totalCorrect:0};
     studentMap[key].totalCorrect += (r.score||0);
   });
   const monthlyArr = Object.values(studentMap)
@@ -304,12 +363,11 @@ function renderRatingPanel() {
     }
   }
 
-  // Mutolaa rating
   const mutStudentMap = {};
   mutolaaRows.forEach(r=>{
-    if (fcls && r.cls!==fcls) return;
-    const key = `${r.name}__${r.cls}`;
-    if (!mutStudentMap[key]) mutStudentMap[key] = {name:r.name, cls:r.cls, mutCorrect:0};
+    if (fcls && r.class_name!==fcls) return;
+    const key = `${r.student_name}__${r.class_name}`;
+    if (!mutStudentMap[key]) mutStudentMap[key] = {name:r.student_name, cls:r.class_name, mutCorrect:0};
     mutStudentMap[key].mutCorrect += (r.score||0);
   });
   const mutArr = Object.values(mutStudentMap)
@@ -343,14 +401,14 @@ function exportToExcel() {
   if (typeof XLSX==='undefined') { showToast('❌','XLSX kutubxonasi yuklanmadi','error'); return; }
   const fcls = document.getElementById('filterClass')?.value||'';
   const fsub = document.getElementById('filterSubject')?.value||'';
-  let rows = db.results||[];
-  if (fcls) rows = rows.filter(r=>r.cls===fcls);
-  if (fsub) rows = rows.filter(r=>r.sub===fsub);
+  let rows = adminResults||[];
+  if (fcls) rows = rows.filter(r=>r.class_name===fcls);
+  if (fsub) rows = rows.filter(r=>r.subject_name===fsub);
   if (rows.length===0) { showToast('⚠️','Chiqarish uchun ma\'lumot yo\'q','warning'); return; }
 
   const wsData = [
     ['#','Ism','Sinf','Fan','To\'g\'ri','Jami','Foiz (%)','Sarflangan vaqt','Chetlanish','Sana'],
-    ...rows.map((r,i)=>[i+1,r.name,r.cls,r.sub,r.score,r.total,r.percent,r.elapsed||'—',r.cheat||0,r.time||'—'])
+    ...rows.map((r,i)=>[i+1,r.student_name,r.class_name,r.subject_name,r.score,r.total,r.percent,fmtElapsed(r.elapsed_seconds),r.cheat_count||0,fmtDate(r.created_at)])
   ];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
   const wb = XLSX.utils.book_new();
@@ -363,9 +421,9 @@ function exportToPDF() {
   if (typeof window.jspdf==='undefined') { showToast('❌','jsPDF kutubxonasi yuklanmadi','error'); return; }
   const fcls = document.getElementById('filterClass')?.value||'';
   const fsub = document.getElementById('filterSubject')?.value||'';
-  let rows = db.results||[];
-  if (fcls) rows = rows.filter(r=>r.cls===fcls);
-  if (fsub) rows = rows.filter(r=>r.sub===fsub);
+  let rows = adminResults||[];
+  if (fcls) rows = rows.filter(r=>r.class_name===fcls);
+  if (fsub) rows = rows.filter(r=>r.subject_name===fsub);
   if (rows.length===0) { showToast('⚠️','Chiqarish uchun ma\'lumot yo\'q','warning'); return; }
 
   const { jsPDF } = window.jspdf;
@@ -378,7 +436,7 @@ function exportToPDF() {
   doc.autoTable({
     startY:28,
     head:[['#','Ism','Sinf','Fan','To\'g\'ri','Jami','%','Vaqt','Chetlanish','Sana']],
-    body: rows.map((r,i)=>[i+1,r.name,r.cls,r.sub,r.score,r.total,r.percent+'%',r.elapsed||'—',r.cheat||0,r.time||'—']),
+    body: rows.map((r,i)=>[i+1,r.student_name,r.class_name,r.subject_name,r.score,r.total,r.percent+'%',fmtElapsed(r.elapsed_seconds),r.cheat_count||0,fmtDate(r.created_at)]),
     styles:{fontSize:8,cellPadding:3},
     headStyles:{fillColor:[79,70,229],textColor:255},
     alternateRowStyles:{fillColor:[238,242,255]}
@@ -387,15 +445,17 @@ function exportToPDF() {
   showToast('📄','PDF yuklab olindi!','success');
 }
 
-function clearAllResults() {
+async function clearAllResults() {
   if (!confirm('Barcha natijalarni o\'chirasizmi? Bu amalni orqaga qaytarib bo\'lmaydi!')) return;
-  db.results = []; saveDB();
+  const { error } = await supabaseClient.from('results').delete().neq('id','00000000-0000-0000-0000-000000000000');
+  if (error) { showToast('❌','O\'chirishda xatolik','error'); return; }
+  adminResults = [];
   renderResultsTable(); renderRatingPanel(); updateDashboardStats(); renderRecentResults();
   showToast('🗑️','Barcha natijalar o\'chirildi','info');
 }
 
 /* ═══════════════════════════════════════════════
-   SESSION PERSISTENCE
+   SESSION PERSISTENCE (resume an unfinished test)
 ═══════════════════════════════════════════════ */
 function saveSession() {
   const answers = {};
@@ -403,7 +463,7 @@ function saveSession() {
     const sel = document.querySelector(`input[name="q${i}"]:checked`);
     if (sel) answers[i] = sel.value;
   }
-  localStorage.setItem(CONFIG.SESSION_KEY, JSON.stringify({
+  localStorage.setItem('ustoz_pro_session_v4', JSON.stringify({
     questions:testState.questions, bookmarks:[...testState.bookmarks],
     cheats:testState.cheats, startTime:testState.startTime?.toISOString(),
     totalSecs:testState.totalSecs, remainingSecs:testState.remainingSecs,
@@ -411,9 +471,9 @@ function saveSession() {
     answers
   }));
 }
-function clearSession() { localStorage.removeItem(CONFIG.SESSION_KEY); }
+function clearSession() { localStorage.removeItem('ustoz_pro_session_v4'); }
 function checkForResumeSession() {
-  const raw = localStorage.getItem(CONFIG.SESSION_KEY);
+  const raw = localStorage.getItem('ustoz_pro_session_v4');
   if (!raw) return;
   try {
     const s = JSON.parse(raw);
@@ -442,7 +502,7 @@ function showResumeBannerOnHome(session) {
   hs.insertBefore(b, hs.firstChild);
 }
 function resumeSession() {
-  const raw = localStorage.getItem(CONFIG.SESSION_KEY); if (!raw) return;
+  const raw = localStorage.getItem('ustoz_pro_session_v4'); if (!raw) return;
   const session = JSON.parse(raw);
   const elapsed = Math.floor((Date.now()-new Date(session.startTime).getTime())/1000);
   const remaining = session.totalSecs - elapsed;
@@ -451,6 +511,7 @@ function resumeSession() {
   testState.cheats=session.cheats||0; testState.startTime=new Date(session.startTime);
   testState.totalSecs=session.totalSecs; testState.remainingSecs=remaining;
   testState.studentName=session.studentName; testState.className=session.className; testState.subjectName=session.subjectName;
+  testState.lastAnswers = {};
   document.getElementById('timerStudentChip').innerText=`👤 ${session.studentName}`;
   document.getElementById('timerSubChip').innerText=`📚 ${session.subjectName}`;
   renderQuestions();
@@ -470,7 +531,7 @@ function resumeSession() {
 function discardSession() { clearSession(); document.getElementById('resumeBanner')?.remove(); showToast('🗑️','Test o\'chirildi','info'); }
 
 /* ═══════════════════════════════════════════════
-   CSV PARSER (RFC-4180 compliant)
+   CSV PARSER (RFC-4180 compliant) — Google Sheets import
 ═══════════════════════════════════════════════ */
 function parseCSVLine(line) {
   const result=[]; let current='',inQuotes=false;
@@ -484,157 +545,267 @@ function parseCSVLine(line) {
   }
   result.push(current.trim()); return result;
 }
+function expandClassNames(raw) {
+  return raw.split(',').map(t=>t.trim()).filter(Boolean).flatMap(token=>{
+    if (/^\d+-\d+$/.test(token)) {
+      const [from,to] = token.split('-').map(Number);
+      const out=[]; for(let n=from;n<=to;n++) out.push(`${n}-sinf`);
+      return out;
+    }
+    if (/^\d+$/.test(token)) return [`${token}-sinf`];
+    return [token];
+  });
+}
+async function getOrCreateClass(name) {
+  let cls = classesCache.find(c=>c.name===name);
+  if (cls) return cls.id;
+  const { data, error } = await supabaseClient.from('classes').insert({ name }).select().single();
+  if (error) {
+    const { data: existing } = await supabaseClient.from('classes').select('*').eq('name',name).single();
+    if (existing) { classesCache.push(existing); return existing.id; }
+    throw error;
+  }
+  classesCache.push(data);
+  return data.id;
+}
+async function getOrCreateSubject(classId, name) {
+  let subj = allSubjects.find(s=>s.class_id===classId && s.name===name);
+  if (subj) return subj.id;
+  const { data, error } = await supabaseClient.from('subjects').insert({ class_id: classId, name }).select().single();
+  if (error) {
+    const { data: existing } = await supabaseClient.from('subjects').select('*').eq('class_id',classId).eq('name',name).single();
+    if (existing) { allSubjects.push(existing); return existing.id; }
+    throw error;
+  }
+  allSubjects.push(data);
+  return data.id;
+}
 
-/* ═══════════════════════════════════════════════
-   SYNC DATA
-═══════════════════════════════════════════════ */
 let syncInProgress=false;
 async function syncData() {
-  if (syncInProgress) return; syncInProgress=true;
+  if (syncInProgress) return;
+  const url = document.getElementById('sheetCsvUrl').value.trim();
+  if (!url) { showToast('⚠️','CSV havolasini kiriting!','warning'); return; }
+  syncInProgress=true;
   const setLoading=loading=>{
-    ['syncBtnIcon','syncMainIcon'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerText=loading?'⌛':'🔄';});
-    ['syncBtnText','syncMainText'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerText=loading?'Yangilanmoqda...':'Hozir yangilash';});
-    const mb=document.getElementById('syncMainBtn'); if(mb) mb.disabled=loading;
+    const icon=document.getElementById('syncMainIcon'); if(icon) icon.innerText=loading?'⌛':'🔄';
+    const txt=document.getElementById('syncMainText'); if(txt) txt.innerText=loading?'Import qilinmoqda...':'Import qilish';
+    const btn=document.getElementById('syncMainBtn'); if(btn) btn.disabled=loading;
   };
   setLoading(true);
   try {
-    const res=await fetch(CONFIG.SHEET_CSV);
+    const res=await fetch(url);
     const csv=await res.text();
     const rows=csv.split('\n').slice(1);
-    db.qs={}; let count=0;
-    rows.forEach(row=>{
-      if (!row.trim()) return;
+    let count=0, errCount=0;
+    for (const row of rows) {
+      if (!row.trim()) continue;
       const cols=parseCSVLine(row);
-      if (cols.length<8) return;
+      if (cols.length<8) continue;
       const [sinf,fan,q,a,b,c,d,cr,hint]=cols;
-      if (!sinf||!fan||!q) return;
-
-      // Class filtering: "5,6,7,8" formatini includes() bilan tekshiramiz
-      // Sinf maydoni "5-sinf" yoki "5,6" bo'lishi mumkin
-      // db.qs da kalit sifatida original sinf qiymatini saqlaymiz
-      if (!db.qs[sinf]) db.qs[sinf]={};
-      if (!db.qs[sinf][fan]) db.qs[sinf][fan]=[];
-      db.qs[sinf][fan].push({q,a:a||'',b:b||'',c:c||'',d:d||'',cr:(cr||'').toLowerCase().trim(),hint:hint||''});
-      count++;
-    });
-    saveDB();
-    const st=document.getElementById('syncStatusText'); if(st) st.innerText=`Tayyor · ${count} ta savol yuklandi`;
-    const sb=document.getElementById('syncStatusBox');
-    if(sb){sb.style.display='block';sb.innerHTML=`<div style="padding:13px;background:var(--success-pale);border:1px solid rgba(5,150,105,0.2);border-radius:var(--r-sm);font-size:12px;color:#065f46;display:flex;gap:9px;align-items:center">✅ <span>Muvaffaqiyatli yangilandi! <b>${count}</b> ta savol yuklandi.</span></div>`;}
-    showToast('✅','Baza yangilandi!','success',`${count} ta savol yuklandi`);
-  } catch(e) { showToast('❌','Xatolik yuz berdi!','error','Internetni tekshiring'); }
+      if (!sinf||!fan||!q) continue;
+      for (const clsName of expandClassNames(sinf)) {
+        try {
+          const clsId = await getOrCreateClass(clsName);
+          const subjId = await getOrCreateSubject(clsId, fan);
+          const { error } = await supabaseClient.from('questions').insert({
+            subject_id: subjId, question_text: q,
+            option_a:a||'', option_b:b||'', option_c:c||'', option_d:d||'',
+            correct_option: (cr||'').toLowerCase().trim() || 'a',
+            hint: hint||''
+          });
+          if (error) errCount++; else count++;
+        } catch(e) { errCount++; }
+      }
+    }
+    await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
+    populateClassSelects();
+    const box=document.getElementById('syncStatusBox');
+    if (box) { box.style.display='block'; box.innerHTML=`<div style="padding:13px;background:var(--success-pale);border:1px solid rgba(5,150,105,0.2);border-radius:var(--r-sm);font-size:12px;color:#065f46">✅ <b>${count}</b> ta savol import qilindi${errCount?`, ${errCount} tasi xato bo'ldi`:''}.</div>`; }
+    showToast('✅','Import tugadi!','success',`${count} ta savol qo'shildi`);
+  } catch(e) { showToast('❌','Xatolik yuz berdi!','error','Havolani va internetni tekshiring'); }
   setLoading(false); syncInProgress=false;
 }
 
 /* ═══════════════════════════════════════════════
-   CLASS MANAGEMENT
+   CLASS MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
 function populateClassSelects() {
-  const classes=Object.keys(db.classes);
-  ['sClass','manageClass','manageClassSub'].forEach(id=>{
+  ['sClass','manageClass','manageClassSub','qClass'].forEach(id=>{
     const sel=document.getElementById(id); if(!sel) return;
     const cur=sel.value;
     sel.innerHTML='<option value="">— Sinfni tanlang —</option>';
-    classes.forEach(c=>sel.innerHTML+=`<option value="${c}">${c}</option>`);
-    if (cur&&classes.includes(cur)) sel.value=cur;
+    classesCache.forEach(c=>sel.innerHTML+=`<option value="${esc(c.name)}">${esc(c.name)}</option>`);
+    if (cur&&classesCache.some(c=>c.name===cur)) sel.value=cur;
   });
 }
-function syncManageSelects() { populateClassSelects(); renderClassList(); }
+async function syncManageSelects() {
+  await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
+  populateClassSelects(); renderClassList();
+}
 function updateTestUI() {
-  const cls=document.getElementById('sClass').value;
+  const clsName=document.getElementById('sClass').value;
   const sn=document.getElementById('sName'); const ss=document.getElementById('sSub');
   sn.innerHTML='<option value="">— O\'quvchini tanlang —</option>';
   ss.innerHTML='<option value="">— Fanni tanlang —</option>';
+  const cls = classesCache.find(c=>c.name===clsName);
   if (cls) {
-    [...(db.classes[cls]||[])].sort().forEach(s=>sn.innerHTML+=`<option value="${s}">${s}</option>`);
-    (db.subjects[cls]||DEFAULT_SUBJECTS).forEach(f=>ss.innerHTML+=`<option value="${f}">${f}</option>`);
+    studentsForClass(cls.id).forEach(s=>sn.innerHTML+=`<option value="${esc(s.full_name)}">${esc(s.full_name)}</option>`);
+    subjectsForClass(cls.id).forEach(s=>ss.innerHTML+=`<option value="${esc(s.name)}">${esc(s.name)}</option>`);
   }
 }
-function addClass() {
+async function addClass() {
   const name=document.getElementById('newClassName').value.trim();
   if (!name){showToast('⚠️','Sinf nomini kiriting!','warning');return;}
-  if (db.classes[name]){showToast('⚠️','Bu sinf allaqachon mavjud!','warning');return;}
-  db.classes[name]=[]; db.subjects[name]=[...DEFAULT_SUBJECTS];
-  saveDB(); populateClassSelects(); renderClassList();
+  const { data, error } = await supabaseClient.from('classes').insert({ name }).select().single();
+  if (error) { showToast('⚠️', error.code==='23505'?'Bu sinf allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
+  await supabaseClient.from('subjects').insert(DEFAULT_SUBJECTS.map(s=>({class_id:data.id,name:s})));
+  await Promise.all([refreshClasses(), refreshAllSubjects()]);
+  populateClassSelects(); renderClassList();
   document.getElementById('newClassName').value='';
   showToast('✅',`"${name}" sinfi qo'shildi!`,'success'); updateDashboardStats();
 }
-function removeClass(name) {
-  if (!confirm(`"${name}" sinfini o'chirasizmi?`)) return;
-  delete db.classes[name]; delete db.subjects[name];
-  saveDB(); populateClassSelects(); renderClassList();
+async function removeClass(id,name) {
+  if (!confirm(`"${name}" sinfini o'chirasizmi? (Uning barcha o'quvchi, fan va savollari ham o'chadi)`)) return;
+  const { error } = await supabaseClient.from('classes').delete().eq('id', id);
+  if (error) { showToast('❌','O\'chirishda xatolik','error'); return; }
+  await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
+  populateClassSelects(); renderClassList();
   showToast('🗑️',`"${name}" o'chirildi.`,'info'); updateDashboardStats();
 }
 function renderClassList() {
-  const classes=Object.keys(db.classes);
-  document.getElementById('classCount').innerText=classes.length;
-  document.getElementById('classList').innerHTML=classes.length===0
+  document.getElementById('classCount').innerText=classesCache.length;
+  document.getElementById('classList').innerHTML=classesCache.length===0
     ?`<div class="empty-state">Sinflar yo'q. Yangi sinf qo'shing.</div>`
-    :classes.map(c=>`<div class="list-item"><div class="li-icon">🏫</div><span class="li-text"><b>${c}</b> — ${(db.classes[c]||[]).length} o'quvchi</span><button class="li-del" onclick="removeClass('${c}')">🗑️</button></div>`).join('');
+    :classesCache.map(c=>`<div class="list-item"><div class="li-icon">🏫</div><span class="li-text"><b>${esc(c.name)}</b> — ${studentsForClass(c.id).length} o'quvchi</span><button class="li-del" onclick="removeClass('${c.id}','${c.name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
 }
 
 /* ═══════════════════════════════════════════════
-   STUDENT MANAGEMENT
+   STUDENT MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
-function addStudent() {
-  const cls=document.getElementById('manageClass').value;
+async function addStudent() {
+  const clsName=document.getElementById('manageClass').value;
   const name=document.getElementById('newStudentName').value.trim();
-  if (!cls){showToast('⚠️','Avval sinfni tanlang!','warning');return;}
+  if (!clsName){showToast('⚠️','Avval sinfni tanlang!','warning');return;}
   if (!name){showToast('⚠️','O\'quvchi ismini kiriting!','warning');return;}
-  if (!db.classes[cls]) db.classes[cls]=[];
-  if (db.classes[cls].includes(name)){showToast('⚠️','Bu o\'quvchi allaqachon mavjud!','warning');return;}
-  db.classes[cls].push(name); saveDB();
+  const cls = classesCache.find(c=>c.name===clsName);
+  const { error } = await supabaseClient.from('students').insert({ class_id: cls.id, full_name: name });
+  if (error) { showToast('⚠️', error.code==='23505'?'Bu o\'quvchi allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
+  await refreshAllStudents();
   renderStudentList(); renderClassList();
   document.getElementById('newStudentName').value='';
   showToast('✅',`"${name}" qo'shildi!`,'success'); updateDashboardStats();
 }
-function removeStudent(cls,name) {
-  db.classes[cls]=db.classes[cls].filter(s=>s!==name); saveDB();
+async function removeStudent(id,name) {
+  const { error } = await supabaseClient.from('students').delete().eq('id', id);
+  if (error) { showToast('❌','Xatolik','error'); return; }
+  await refreshAllStudents();
   renderStudentList(); renderClassList();
   showToast('🗑️',`"${name}" o'chirildi.`,'info'); updateDashboardStats();
 }
 function renderStudentList() {
-  const cls=document.getElementById('manageClass')?.value;
-  const students=cls?(db.classes[cls]||[]):[];
+  const clsName=document.getElementById('manageClass')?.value;
+  const cls = classesCache.find(c=>c.name===clsName);
+  const students = cls ? studentsForClass(cls.id) : [];
   document.getElementById('studentCount').innerText=students.length;
   document.getElementById('studentList').innerHTML=students.length===0
     ?`<div class="empty-state">${cls?'O\'quvchilar yo\'q.':'Sinfni tanlang.'}</div>`
-    :[...students].sort().map(s=>`<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${s}</span><button class="li-del" onclick="removeStudent('${cls}','${s.replace(/'/g,"\\'")}')" >🗑️</button></div>`).join('');
+    :students.map(s=>`<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${esc(s.full_name)}</span><button class="li-del" onclick="removeStudent('${s.id}','${s.full_name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
 }
 
 /* ═══════════════════════════════════════════════
-   SUBJECT MANAGEMENT
+   SUBJECT MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
-function addSubject() {
-  const cls=document.getElementById('manageClassSub')?.value;
+async function addSubject() {
+  const clsName=document.getElementById('manageClassSub')?.value;
   const name=document.getElementById('newSubName').value.trim();
-  if (!cls){showToast('⚠️','Avval sinfni tanlang!','warning');return;}
+  if (!clsName){showToast('⚠️','Avval sinfni tanlang!','warning');return;}
   if (!name){showToast('⚠️','Fan nomini kiriting!','warning');return;}
-  if (!db.subjects[cls]) db.subjects[cls]=[];
-  if (db.subjects[cls].includes(name)){showToast('⚠️','Bu fan allaqachon mavjud!','warning');return;}
-  db.subjects[cls].push(name); saveDB(); renderSubjectList();
+  const cls = classesCache.find(c=>c.name===clsName);
+  const { error } = await supabaseClient.from('subjects').insert({ class_id: cls.id, name });
+  if (error) { showToast('⚠️', error.code==='23505'?'Bu fan allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
+  await refreshAllSubjects();
+  renderSubjectList();
   document.getElementById('newSubName').value='';
   showToast('✅',`"${name}" fani qo'shildi!`,'success');
 }
-function removeSubject(cls,name) {
-  db.subjects[cls]=db.subjects[cls].filter(s=>s!==name); saveDB(); renderSubjectList();
+async function removeSubject(id,name) {
+  const { error } = await supabaseClient.from('subjects').delete().eq('id', id);
+  if (error) { showToast('❌','Xatolik','error'); return; }
+  await refreshAllSubjects();
+  renderSubjectList();
   showToast('🗑️',`"${name}" fani o'chirildi.`,'info');
 }
 function renderSubjectList() {
-  const cls=document.getElementById('manageClassSub')?.value||document.getElementById('manageClass')?.value;
-  const subs=cls?(db.subjects[cls]||[]):[];
+  const clsName=document.getElementById('manageClassSub')?.value||document.getElementById('manageClass')?.value;
+  const cls = classesCache.find(c=>c.name===clsName);
+  const subs = cls ? subjectsForClass(cls.id) : [];
   const el=document.getElementById('subjectList'); if (!el) return;
   document.getElementById('subjectCount').innerText=subs.length;
   el.innerHTML=subs.length===0
     ?`<div class="empty-state">${cls?'Fanlar yo\'q.':'Sinfni tanlang.'}</div>`
-    :subs.map(s=>`<div class="list-item"><div class="li-icon">📖</div><span class="li-text">${s}</span><button class="li-del" onclick="removeSubject('${cls}','${s.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
+    :subs.map(s=>`<div class="list-item"><div class="li-icon">📖</div><span class="li-text">${esc(s.name)}</span><button class="li-del" onclick="removeSubject('${s.id}','${s.name.replace(/'/g,"\\'")}')">🗑️</button></div>`).join('');
+}
+
+/* ═══════════════════════════════════════════════
+   QUESTION MANAGEMENT (admin) — replaces Google Sheets as the source of truth
+═══════════════════════════════════════════════ */
+function onQClassChange() {
+  const clsName=document.getElementById('qClass').value;
+  const qs=document.getElementById('qSubject');
+  qs.innerHTML='<option value="">— Avval sinfni tanlang —</option>';
+  document.getElementById('questionListArea').innerHTML='';
+  document.getElementById('questionCount').innerText='0';
+  const cls = classesCache.find(c=>c.name===clsName);
+  if (!cls) return;
+  qs.innerHTML='<option value="">— Fanni tanlang —</option>'+subjectsForClass(cls.id).map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+}
+async function renderQuestionList() {
+  const subjectId=document.getElementById('qSubject')?.value;
+  const area=document.getElementById('questionListArea');
+  if (!subjectId) { area.innerHTML=''; document.getElementById('questionCount').innerText='0'; return; }
+  const { data, error } = await supabaseClient.from('questions').select('*').eq('subject_id', subjectId).order('created_at');
+  if (error) { area.innerHTML=`<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
+  allQuestions = data||[];
+  document.getElementById('questionCount').innerText=allQuestions.length;
+  area.innerHTML=allQuestions.length===0
+    ?`<div class="empty-state">Bu fan uchun savollar yo'q.</div>`
+    :allQuestions.map(q=>`<div class="list-item"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><button class="li-del" onclick="removeQuestion('${q.id}')">🗑️</button></div>`).join('');
+}
+async function addQuestion() {
+  const subjectId=document.getElementById('qSubject')?.value;
+  const text=document.getElementById('newQText').value.trim();
+  const a=document.getElementById('newQA').value.trim();
+  const b=document.getElementById('newQB').value.trim();
+  const c=document.getElementById('newQC').value.trim();
+  const d=document.getElementById('newQD').value.trim();
+  const correct=document.getElementById('newQCorrect').value;
+  const hint=document.getElementById('newQHint').value.trim();
+  if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
+  if (!text||!a||!b) { showToast('⚠️','Savol matni va kamida A/B variantlarini kiriting!','warning'); return; }
+  const { error } = await supabaseClient.from('questions').insert({
+    subject_id: subjectId, question_text: text,
+    option_a:a, option_b:b, option_c:c, option_d:d,
+    correct_option: correct, hint
+  });
+  if (error) { showToast('❌','Saqlashda xatolik','error'); return; }
+  ['newQText','newQA','newQB','newQC','newQD','newQHint'].forEach(id=>document.getElementById(id).value='');
+  await renderQuestionList();
+  showToast('✅','Savol qo\'shildi!','success');
+}
+async function removeQuestion(id) {
+  if (!confirm('Bu savolni o\'chirasizmi?')) return;
+  const { error } = await supabaseClient.from('questions').delete().eq('id', id);
+  if (error) { showToast('❌','Xatolik','error'); return; }
+  await renderQuestionList();
+  showToast('🗑️','Savol o\'chirildi.','info');
 }
 
 /* ═══════════════════════════════════════════════
    MANAGE TABS
 ═══════════════════════════════════════════════ */
 function switchMTab(tab) {
-  ['classes','students','subjects'].forEach(t=>{
+  ['classes','students','subjects','questions'].forEach(t=>{
     document.getElementById(`mtab-${t}`)?.classList.toggle('active',t===tab);
     document.getElementById(`mpanel-${t}`)?.classList.toggle('active',t===tab);
   });
@@ -645,112 +816,70 @@ function switchMTab(tab) {
 /* ═══════════════════════════════════════════════
    DASHBOARD STATS
 ═══════════════════════════════════════════════ */
-function updateDashboardStats() {
-  const total=Object.values(db.classes).reduce((s,a)=>s+a.length,0);
-  const allS=new Set(); Object.values(db.subjects).forEach(a=>a.forEach(s=>allS.add(s)));
-  document.getElementById('statStudentsCount').innerText=total;
-  document.getElementById('statSubjectsCount').innerText=allS.size;
-  document.getElementById('statTotalTests').innerText=(db.results||[]).length;
-  if ((db.results||[]).length>0) {
-    const avg=Math.round(db.results.reduce((s,r)=>s+(r.percent||0),0)/db.results.length);
-    const tEl=document.getElementById('statAvgTrend');
-    document.getElementById('statAvgScore').innerText=avg+'%';
-    if (avg>=70){tEl.className='stat-trend trend-up';tEl.innerText='↑ Yaxshi daraja';}
+async function updateDashboardStats() {
+  document.getElementById('statStudentsCount').innerText = allStudents.length;
+  document.getElementById('statSubjectsCount').innerText = new Set(allSubjects.map(s=>s.name)).size;
+
+  const { data } = await supabaseClient.rpc('get_public_stats');
+  const stats = (data && data[0]) || { total_tests:0, avg_percent:0 };
+  document.getElementById('statTotalTests').innerText = stats.total_tests;
+  const tEl=document.getElementById('statAvgTrend');
+  if (stats.total_tests>0) {
+    document.getElementById('statAvgScore').innerText = stats.avg_percent+'%';
+    if (stats.avg_percent>=70){tEl.className='stat-trend trend-up';tEl.innerText='↑ Yaxshi daraja';}
     else{tEl.className='stat-trend trend-down';tEl.innerText='↓ Yaxshilash kerak';}
+  } else {
+    document.getElementById('statAvgScore').innerText='0%';
+    tEl.className='stat-trend'; tEl.innerText='— ma\'lumot yo\'q';
   }
 }
 function renderRecentResults() {
   const list=document.getElementById('recentResultsList');
-  if (!db.results||db.results.length===0){list.innerHTML='<div class="empty-state">📭 Hali test natijasi yo\'q.</div>';return;}
-  const recent=[...db.results].reverse().slice(0,5);
+  if (!adminLoggedIn) { list.innerHTML='<div class="empty-state">🔒 Natijalarni ko\'rish uchun admin sifatida kiring.</div>'; return; }
+  if (!adminResults||adminResults.length===0){list.innerHTML='<div class="empty-state">📭 Hali test natijasi yo\'q.</div>';return;}
+  const recent=adminResults.slice(0,5);
   list.innerHTML=recent.map(r=>{
     const key=r.percent>=90?'success':r.percent>=70?'primary':r.percent>=50?'warning':'danger';
     const emoji=r.percent>=90?'🥇':r.percent>=70?'🥈':r.percent>=50?'🥉':'📉';
     const grade=r.percent>=90?'A':r.percent>=70?'B':r.percent>=50?'C':'D';
-    return `<div class="result-item"><div class="ri-icon" style="background:var(--${key}-pale)">${emoji}</div><div class="ri-info"><div class="ri-name">${r.name}</div><div class="ri-meta">${r.cls} · ${r.sub} · ${r.time}</div></div><div class="ri-score"><div class="ri-pct" style="color:var(--${key})">${r.percent}%</div><div class="ri-grade" style="color:var(--${key})">${grade} daraja</div></div></div>`;
+    return `<div class="result-item"><div class="ri-icon" style="background:var(--${key}-pale)">${emoji}</div><div class="ri-info"><div class="ri-name">${esc(r.student_name)}</div><div class="ri-meta">${esc(r.class_name)} · ${esc(r.subject_name)} · ${fmtDate(r.created_at)}</div></div><div class="ri-score"><div class="ri-pct" style="color:var(--${key})">${r.percent}%</div><div class="ri-grade" style="color:var(--${key})">${grade} daraja</div></div></div>`;
   }).join('');
 }
 
 /* ═══════════════════════════════════════════════
-   ATTEMPT LIMIT CHECK
-   Google Sheets "Class" ustunida "5,6,7,8" format uchun includes()
+   START TEST — via the get-test Edge Function
+   (correct answers are never sent to the client before submission)
 ═══════════════════════════════════════════════ */
-function checkAttemptLimit(studentName, cls, sub) {
-  if (!settings.enableAttemptLimit) return true;
-  const count = (db.results||[]).filter(r=>r.name===studentName&&r.cls===cls&&r.sub===sub).length;
-  return count < settings.maxAttempts;
-}
-
-/* Google Sheets sinf ustunida vergul bilan ajratilgan sinflar uchun
-   e.g. "5,6,7" -> o'quvchi "5-sinf" tanlasa "5" includes bilan tekshiriladi */
-function getQuestionsForClassSub(selectedClass, selectedSub) {
-  // Agar to'g'ridan-to'g'ri kalit bor bo'lsa
-  if (db.qs[selectedClass]&&db.qs[selectedClass][selectedSub]) {
-    return db.qs[selectedClass][selectedSub];
-  }
-  // Vergul bilan ajratilgan format: "5,6,7,8" -> tanlangan sinfning raqamini olish
-  const classNum = selectedClass.replace(/[^0-9]/g,''); // "5-sinf" -> "5"
-  const combined = [];
-  Object.keys(db.qs).forEach(sheetClass=>{
-    // Spread format: e.g. "5,6,7" yoki "5-8"
-    const parts = sheetClass.split(',').map(p=>p.trim());
-    const matches = parts.some(p=>{
-      if (p===classNum||p===selectedClass) return true;
-      // Range check "5-8"
-      if (p.includes('-')&&!p.includes('sinf')) {
-        const [from,to]=p.split('-').map(Number);
-        const cn=parseInt(classNum);
-        return !isNaN(from)&&!isNaN(to)&&cn>=from&&cn<=to;
-      }
-      return false;
-    });
-    if (matches&&db.qs[sheetClass]&&db.qs[sheetClass][selectedSub]) {
-      combined.push(...db.qs[sheetClass][selectedSub]);
-    }
-  });
-  return combined;
-}
-
-/* ═══════════════════════════════════════════════
-   START TEST
-═══════════════════════════════════════════════ */
-function startTest() {
+async function startTest() {
   const cls  = document.getElementById('sClass').value;
   const sub  = document.getElementById('sSub').value;
   const name = document.getElementById('sName').value;
 
   if (!cls||!sub||!name){showToast('⚠️','Barcha maydonlarni to\'ldiring!','warning');return;}
 
-  // Attempt limit check
-  if (!checkAttemptLimit(name,cls,sub)) {
-    showToast('🚫','Urinishlar soni tugadi!','error',`${sub} fani uchun ${settings.maxAttempts} ta urinish haddi`);
-    return;
-  }
+  const count = settings.allow_custom ? (parseInt(document.getElementById('sCount').value)||15) : settings.question_count;
+  const mins  = settings.allow_custom ? (parseInt(document.getElementById('sTime').value)||20)  : settings.time_limit_minutes;
 
-  // Admin yoki student sozlamasi
-  const count = settings.allowCustom ? (parseInt(document.getElementById('sCount').value)||15) : settings.questionCount;
-  const mins  = settings.allowCustom ? (parseInt(document.getElementById('sTime').value)||20)  : settings.timeLimit;
+  let resp;
+  try { resp = await callEdgeFunction('get-test', { class_name:cls, subject_name:sub, student_name:name, count }); }
+  catch(e) { showToast('❌','Server bilan bog\'lanishda xatolik','error'); return; }
 
-  // Savollarni topish (vergul bilan ajratilgan sinf formatini ham qo'llab-quvvatlaydi)
-  const pool = getQuestionsForClassSub(cls, sub);
-
-  if (!pool||pool.length===0) {
-    showToast('📚','Savollar yuklanmagan!','error',`${cls} · ${sub} uchun avval bazani yangilang`);
-    return;
-  }
+  if (resp.error==='attempt_limit_reached') { showToast('🚫','Urinishlar soni tugadi!','error',`${sub} fani uchun ${resp.max_attempts} ta urinish haddi`); return; }
+  if (resp.error==='no_questions'||resp.error==='class_not_found'||resp.error==='subject_not_found') { showToast('📚','Savollar topilmadi!','error',`${cls} · ${sub} uchun avval savol qo'shing`); return; }
+  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
 
   clearSession();
-  const take = Math.min(count, pool.length);
-  testState.questions    = [...pool].sort(()=>Math.random()-0.5).slice(0,take);
-  testState.bookmarks    = new Set();
-  testState.cheats       = 0;
-  testState.startTime    = new Date();
-  testState.totalSecs    = mins*60;
+  testState.questions = resp.questions.map(q=>({id:q.id, q:q.question_text, a:q.option_a, b:q.option_b, c:q.option_c, d:q.option_d, hint:q.hint}));
+  testState.bookmarks = new Set();
+  testState.cheats = 0;
+  testState.startTime = new Date();
+  testState.totalSecs = mins*60;
   testState.remainingSecs = mins*60;
-  testState.studentName  = name;
-  testState.className    = cls;
-  testState.subjectName  = sub;
-  testState.lastReview   = [];
+  testState.studentName = name;
+  testState.className = cls;
+  testState.subjectName = sub;
+  testState.lastAnswers = {};
+  testState.lastWrongReview = [];
 
   document.getElementById('timerStudentChip').innerText=`👤 ${name}`;
   document.getElementById('timerSubChip').innerText=`📚 ${sub}`;
@@ -759,7 +888,6 @@ function startTest() {
   navigateTo('test');
   startTimer(mins*60);
 
-  // Anti-cheat: window.blur & visibilitychange
   window.onblur = handleCheat;
   document.addEventListener('visibilitychange', onVisibilityChange);
 }
@@ -831,6 +959,8 @@ function scrollToQ(i){const card=document.getElementById(`qcard-${i}`);if(!card)
 function markAnswered(i){
   document.getElementById(`qcard-${i}`)?.classList.add('answered');
   document.getElementById(`qdot-${i}`)?.classList.add('answered');
+  const sel=document.querySelector(`input[name="q${i}"]:checked`);
+  if (sel) testState.lastAnswers[testState.questions[i].id]=sel.value;
   updateQProgress(); setTimeout(saveSession,50);
 }
 function updateQProgress(){
@@ -873,7 +1003,7 @@ function showCheatAlert(){
 }
 
 /* ═══════════════════════════════════════════════
-   CONFIRM & FINISH
+   CONFIRM & FINISH — grading happens server-side (submit-result)
 ═══════════════════════════════════════════════ */
 function confirmFinish(){
   const total=testState.questions.length; let answered=0;
@@ -888,38 +1018,37 @@ async function finishTest(){
   document.removeEventListener('visibilitychange',onVisibilityChange);
   clearSession();
 
-  let score=0; const review=[];
   testState.questions.forEach((q,i)=>{
     const sel=document.querySelector(`input[name="q${i}"]:checked`)?.value;
-    const correct=q.cr?.toLowerCase().trim();
-    const isRight=sel&&sel===correct;
-    if(isRight)score++;
-    review.push({q:q.q, sel:sel?q[sel]:'Belgilanmagan', cr:q[correct]||correct||'?', isRight, correctLetter:correct});
+    if (sel) testState.lastAnswers[q.id]=sel; else delete testState.lastAnswers[q.id];
   });
-  testState.lastReview=review;
 
-  const total=testState.questions.length;
-  const percent=Math.round((score/total)*100);
   const elapsed=Math.round((new Date()-testState.startTime)/1000);
-  const elMin=Math.floor(elapsed/60),elSec=elapsed%60;
-  const result={
-    name:testState.studentName, cls:testState.className, sub:testState.subjectName,
-    score, total, percent, rating_score:score,
-    cheat:testState.cheats, elapsed:`${elMin}:${elSec<10?'0'+elSec:elSec}`,
-    time:new Date().toLocaleString('uz-UZ')
-  };
-  db.results.push(result); saveDB();
-  buildResultScreen(result,review,elapsed);
+  let resp;
+  try {
+    resp = await callEdgeFunction('submit-result', {
+      student_name: testState.studentName,
+      class_name: testState.className,
+      subject_name: testState.subjectName,
+      question_ids: testState.questions.map(q=>q.id),
+      answers: testState.lastAnswers,
+      cheat_count: testState.cheats,
+      elapsed_seconds: elapsed
+    });
+  } catch(e) { showToast('❌','Natijani yuborishda xatolik','error'); return; }
+  if (resp.error) { showToast('❌','Xatolik: '+resp.error,'error'); return; }
+
+  testState.lastWrongReview = resp.wrong_review||[];
+  buildResultScreen(resp.result);
   navigateTo('result');
-  if(percent>=70) launchConfetti(percent);
-  sendResults(result);
+  if(resp.result.percent>=70) launchConfetti(resp.result.percent);
 }
 
 /* ═══════════════════════════════════════════════
    BUILD RESULT SCREEN
 ═══════════════════════════════════════════════ */
-function buildResultScreen(result,review,elapsedSec){
-  const {name,cls,sub,score,total,percent,cheat}=result;
+function buildResultScreen(result){
+  const {student_name:name, class_name:cls, subject_name:sub, score, total, percent, cheat_count:cheat, elapsed_seconds:elapsedSec}=result;
   let emoji,msg;
   if(percent>=90){emoji='🥇';msg="Ajoyib! Siz zo'r natija ko'rsatdingiz!";}
   else if(percent>=70){emoji='🥈';msg="Yaxshi! Yana bir oz harakat bilan mukammal bo'ladi.";}
@@ -943,32 +1072,29 @@ function buildResultScreen(result,review,elapsedSec){
   fillEl.setAttribute('stroke',percent>=90?'url(#circGradGreen)':percent>=70?'url(#circGrad)':percent>=50?'url(#circGradOrange)':'url(#circGradRed)');
   requestAnimationFrame(()=>requestAnimationFrame(()=>fillEl.style.strokeDashoffset=`${offset}`));
 
-  const elMin=Math.floor(elapsedSec/60),elSec=elapsedSec%60;
-  document.getElementById('resMetaTags').innerHTML=`<span class="meta-pill">🏫 ${cls}</span><span class="meta-pill">📚 ${sub}</span><span class="meta-pill">⏱ ${elMin}m ${elSec}s</span><span class="meta-pill">📅 ${new Date().toLocaleDateString('uz-UZ')}</span>`;
+  const elMin=Math.floor((elapsedSec||0)/60),elSec=(elapsedSec||0)%60;
+  document.getElementById('resMetaTags').innerHTML=`<span class="meta-pill">🏫 ${esc(cls)}</span><span class="meta-pill">📚 ${esc(sub)}</span><span class="meta-pill">⏱ ${elMin}m ${elSec}s</span><span class="meta-pill">📅 ${new Date().toLocaleDateString('uz-UZ')}</span>`;
   document.getElementById('resScore').innerText=`${score}/${total}`;
   document.getElementById('resPercent').innerText=`${percent}%`;
   document.getElementById('resCheat').innerText=cheat;
   document.getElementById('resMsgText').innerText=msg;
 
-  const wrongCount=review.filter(r=>!r.isRight).length;
-  document.getElementById('reviewBadge').innerText=`${wrongCount} ta xato`;
-
-  // Show only wrong answers in review (not correct)
-  const wrongs=review.filter(r=>!r.isRight);
+  const wrongs=testState.lastWrongReview;
+  document.getElementById('reviewBadge').innerText=`${wrongs.length} ta xato`;
   document.getElementById('reviewList').innerHTML= wrongs.length===0
     ?`<div style="text-align:center;padding:22px;color:var(--success);font-weight:700">🎉 Barcha savollar to'g'ri javoblandi!</div>`
     :wrongs.map((r,i)=>`
       <div class="review-item review-wrong" style="animation-delay:${i*0.02}s">
-        <p class="review-q"><b>${review.indexOf(r)+1}.</b> ${esc(r.q)}</p>
-        <div class="review-answer-row"><span class="review-dot dot-wrong"></span><span class="ans-lbl">Sizning javobingiz:&nbsp;</span><span class="ans-wrong">${esc(r.sel)}</span></div>
+        <p class="review-q"><b>${i+1}.</b> ${esc(r.question_text)}</p>
+        <div class="review-answer-row"><span class="review-dot dot-wrong"></span><span class="ans-lbl">Sizning javobingiz:&nbsp;</span><span class="ans-wrong">${esc(r.selected_text)}</span></div>
       </div>`).join('');
 
-  // Hide correct answers section
   document.getElementById('correctAnswersSection')?.classList.add('hidden');
 }
 
 /* ═══════════════════════════════════════════════
-   ANSWER REVEAL (paroldan keyin)
+   ANSWER REVEAL — password-gated via reveal-answers Edge Function.
+   Correct answers are fetched only at this point, never earlier.
 ═══════════════════════════════════════════════ */
 function showAnswerLockModal(){
   const overlay=document.getElementById('answerLockOverlay');
@@ -978,35 +1104,41 @@ function showAnswerLockModal(){
   setTimeout(()=>document.getElementById('answerPasswordInput').focus(),100);
 }
 function closeAnswerLockModal(){document.getElementById('answerLockOverlay').classList.add('hidden');}
-function checkAnswerPassword(){
+async function checkAnswerPassword(){
   const inp=document.getElementById('answerPasswordInput');
-  if(inp.value===CONFIG.ANSWER_PASS){
-    closeAnswerLockModal();
-    showCorrectAnswers();
-  } else {
-    inp.classList.add('error');
-    setTimeout(()=>inp.classList.remove('error'),600);
+  let resp;
+  try { resp = await callEdgeFunction('reveal-answers', { question_ids: testState.questions.map(q=>q.id), password: inp.value }); }
+  catch(e) { showToast('❌','Xatolik','error'); return; }
+  if (resp.error==='wrong_password') {
+    inp.classList.add('error'); setTimeout(()=>inp.classList.remove('error'),600);
     showToast('❌','Parol noto\'g\'ri!','error');
+    return;
   }
+  if (resp.error) { showToast('❌','Xatolik','error'); return; }
+  closeAnswerLockModal();
+  showCorrectAnswers(resp.answers);
 }
-function showCorrectAnswers(){
+function showCorrectAnswers(answersArr){
   const section=document.getElementById('correctAnswersSection');
   const list=document.getElementById('correctAnswersList');
   section.classList.remove('hidden');
 
-  const review=testState.lastReview;
-  if(!review||review.length===0){list.innerHTML='<div class="empty-state">Ma\'lumot yo\'q</div>';return;}
-
-  list.innerHTML=review.map((r,i)=>`
-    <div class="review-item ${r.isRight?'review-correct':'review-wrong'}" style="animation-delay:${i*0.02}s">
-      <p class="review-q"><b>${i+1}.</b> ${esc(r.q)}</p>
+  const correctMap={}; (answersArr||[]).forEach(a=>correctMap[a.id]=a.correct_option);
+  list.innerHTML=testState.questions.map((q,i)=>{
+    const correctLetter=correctMap[q.id];
+    const correctText=q[correctLetter];
+    const selLetter=testState.lastAnswers[q.id];
+    const isRight=selLetter===correctLetter;
+    return `<div class="review-item ${isRight?'review-correct':'review-wrong'}" style="animation-delay:${i*0.02}s">
+      <p class="review-q"><b>${i+1}.</b> ${esc(q.q)}</p>
       <div class="review-answer-row">
         <span class="review-dot dot-correct"></span>
         <span class="ans-lbl">To'g'ri javob:&nbsp;</span>
-        <span class="ans-right">${esc(r.cr)} ${r.correctLetter?'('+r.correctLetter.toUpperCase()+')':''}</span>
+        <span class="ans-right">${esc(correctText)} ${correctLetter?'('+correctLetter.toUpperCase()+')':''}</span>
       </div>
-      ${!r.isRight?`<div class="review-answer-row"><span class="review-dot dot-wrong"></span><span class="ans-lbl">Sizning javobingiz:&nbsp;</span><span class="ans-wrong">${esc(r.sel)}</span></div>`:''}
-    </div>`).join('');
+      ${!isRight?`<div class="review-answer-row"><span class="review-dot dot-wrong"></span><span class="ans-lbl">Sizning javobingiz:&nbsp;</span><span class="ans-wrong">${esc(selLetter?q[selLetter]:'Belgilanmagan')}</span></div>`:''}
+    </div>`;
+  }).join('');
 
   section.scrollIntoView({behavior:'smooth',block:'start'});
   showToast('🔓','To\'g\'ri javoblar ko\'rsatildi!','success','Faqat o\'qituvchi ko\'rishi mumkin');
@@ -1050,22 +1182,4 @@ function launchConfetti(percent){
     else{canvas.style.display='none';ctx.clearRect(0,0,canvas.width,canvas.height);}
   }
   requestAnimationFrame(draw);
-}
-
-/* ═══════════════════════════════════════════════
-   SEND RESULTS — Supabase + Telegram
-═══════════════════════════════════════════════ */
-async function sendResults(d){
-  const payload={
-    student_name:d.name, class_name:d.cls, subject:d.sub,
-    score:d.score, total:d.total, percent:d.percent,
-    rating_score:d.rating_score, cheat_count:d.cheat,
-    elapsed:d.elapsed, created_at:new Date().toISOString()
-  };
-  fetch(CONFIG.SUPABASE_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-    .then(async res=>{if(!res.ok){const t=await res.text().catch(()=>'');console.warn('[Supabase] error:',res.status,t);}})
-    .catch(err=>console.warn('[Supabase] fetch error:',err));
-
-  const tgText=`📊 *YANGI TEST NATIJASI*\n\n👤 *O'quvchi:* ${d.name}\n🏫 *Sinf:* ${d.cls}\n📚 *Fan:* ${d.sub}\n✅ *To'g'ri:* ${d.score} / ${d.total}\n📈 *Foiz:* ${d.percent}%\n⏱ *Sarflangan vaqt:* ${d.elapsed}\n⚠️ *Chetlanish:* ${d.cheat} marta\n🕒 *Sana:* ${d.time}`;
-  fetch(`https://api.telegram.org/bot${CONFIG.TG_TOKEN}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CONFIG.TG_CHAT,text:tgText,parse_mode:'Markdown'})}).catch(()=>{});
 }

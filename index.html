@@ -10,6 +10,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <!-- SheetJS -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Supabase JS client -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -100,17 +102,6 @@
 
       <!-- ═══ TEST SETUP ═══ -->
       <div class="screen" id="screen-test-setup">
-        <div class="sync-card" style="margin-bottom:14px">
-          <div class="sync-inner">
-            <div class="sync-icon-wrap" id="syncIconWrap">🔄</div>
-            <div>
-              <div class="sync-info-txt">Savollar bazasi holati</div>
-              <div class="sync-info-sub" id="syncStatusText">Savollar yuklanmagan yoki eskirib qolgan bo'lishi mumkin</div>
-            </div>
-          </div>
-          <button class="btn btn-secondary btn-md btn-full" onclick="syncData()"><span id="syncBtnIcon">🔄</span> <span id="syncBtnText">Bazani yangilash</span></button>
-        </div>
-
         <div class="setup-card">
           <div class="setup-card-header">
             <div class="setup-card-icon">👤</div>
@@ -427,10 +418,18 @@
 
       <!-- ═══ MANAGE ═══ -->
       <div class="screen" id="screen-manage">
+        <div id="manageLoginGate" class="setup-card" style="display:none;text-align:center">
+          <span class="admin-icon">🔐</span>
+          <div class="admin-login-title">Admin sifatida kiring</div>
+          <div class="admin-login-sub">Sinf, o'quvchi, fan va savollarni boshqarish uchun admin panelga kiring.</div>
+          <button class="btn btn-primary btn-md" onclick="navigateTo('admin')">🔐 Admin panelga o'tish</button>
+        </div>
+        <div id="manageContent">
         <div class="manage-tabs">
           <button class="mtab active" id="mtab-classes" onclick="switchMTab('classes')">🏫 Sinflar</button>
           <button class="mtab" id="mtab-students" onclick="switchMTab('students')">👥 O'quvchilar</button>
           <button class="mtab" id="mtab-subjects" onclick="switchMTab('subjects')">📖 Fanlar</button>
+          <button class="mtab" id="mtab-questions" onclick="switchMTab('questions')">❓ Savollar</button>
         </div>
 
         <div class="manage-panel active" id="mpanel-classes">
@@ -470,18 +469,60 @@
             <div id="subjectList"></div>
           </div>
         </div>
+
+        <div class="manage-panel" id="mpanel-questions">
+          <div class="setup-card">
+            <div class="setup-card-header"><div class="setup-card-icon">❓</div><div><div class="setup-card-title">Savol qo'shish</div><div class="setup-card-subtitle">Savollar bazasi endi shu yerdan boshqariladi</div></div></div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">Sinf</label><select class="form-control select" id="qClass" onchange="onQClassChange()"><option value="">— Sinfni tanlang —</option></select></div>
+              <div class="form-group"><label class="form-label">Fan</label><select class="form-control select" id="qSubject" onchange="renderQuestionList()"><option value="">— Avval sinfni tanlang —</option></select></div>
+            </div>
+            <div class="form-group"><label class="form-label">Savol matni</label><input type="text" class="form-control" id="newQText" placeholder="Savol matnini kiriting"></div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">A varianti</label><input type="text" class="form-control" id="newQA" placeholder="A"></div>
+              <div class="form-group"><label class="form-label">B varianti</label><input type="text" class="form-control" id="newQB" placeholder="B"></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group"><label class="form-label">C varianti</label><input type="text" class="form-control" id="newQC" placeholder="C"></div>
+              <div class="form-group"><label class="form-label">D varianti</label><input type="text" class="form-control" id="newQD" placeholder="D"></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">To'g'ri javob</label>
+                <select class="form-control select" id="newQCorrect">
+                  <option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option>
+                </select>
+              </div>
+              <div class="form-group"><label class="form-label">Izoh (ixtiyoriy)</label><input type="text" class="form-control" id="newQHint" placeholder="Yordamchi izoh"></div>
+            </div>
+            <button class="btn btn-primary btn-md btn-full" onclick="addQuestion()">+ Savol qo'shish</button>
+            <div class="sec-head"><h4>Savollar ro'yxati</h4><span class="badge" id="questionCount">0</span></div>
+            <div id="questionListArea"></div>
+          </div>
+        </div>
+        </div><!-- /manageContent -->
       </div>
 
       <!-- ═══ SYNC ═══ -->
       <div class="screen" id="screen-sync">
-        <div class="setup-card">
+        <div id="syncLoginGate" class="setup-card" style="display:none;text-align:center">
+          <span class="admin-icon">🔐</span>
+          <div class="admin-login-title">Admin sifatida kiring</div>
+          <div class="admin-login-sub">Google Sheets'dan ommaviy import qilish uchun admin panelga kiring.</div>
+          <button class="btn btn-primary btn-md" onclick="navigateTo('admin')">🔐 Admin panelga o'tish</button>
+        </div>
+        <div class="setup-card" id="syncContent">
           <div class="setup-card-header">
             <div class="setup-card-icon">🔄</div>
-            <div><div class="setup-card-title">Ma'lumotlar bazasini yangilash</div><div class="setup-card-subtitle">Google Sheets'dan savollarni yuklab oling</div></div>
+            <div><div class="setup-card-title">Google Sheets'dan ommaviy import</div><div class="setup-card-subtitle">Savollar endi asosan "Boshqarish → Savollar" bo'limidan qo'shiladi. Bu yerda eski Sheet'dan ko'p savolni bir yo'la bazaga ko'chirish mumkin.</div></div>
           </div>
-          <div class="info-note" style="margin-bottom:14px">💡 Savollarni Google Sheets'dan yuklab olish uchun quyidagi tugmani bosing. Ma'lumotlar qurilmangizda saqlanib qoladi va internet bo'lmasa ham test o'tkazish mumkin bo'ladi.</div>
+          <div class="form-group">
+            <label class="form-label">Google Sheets CSV havolasi</label>
+            <input type="text" class="form-control" id="sheetCsvUrl" placeholder="https://docs.google.com/spreadsheets/.../pub?output=csv">
+          </div>
+          <div class="info-note" style="margin-bottom:14px">💡 Ustunlar tartibi: Sinf, Fan, Savol, A, B, C, D, To'g'ri javob (a/b/c/d), Izoh. Sinf ustunida "5" yoki "5,6,7" kabi bir nechta sinf ham qo'llab-quvvatlanadi — mos sinflar avtomatik yaratiladi.</div>
           <button class="btn btn-primary btn-lg btn-full" id="syncMainBtn" onclick="syncData()">
-            <span id="syncMainIcon">🔄</span> <span id="syncMainText">Hozir yangilash</span>
+            <span id="syncMainIcon">🔄</span> <span id="syncMainText">Import qilish</span>
           </button>
           <div id="syncStatusBox" style="margin-top:13px;display:none"></div>
         </div>

@@ -1,6 +1,19 @@
 # Ustoz Pro — Oylik Test Platformasi
 
-Zamaxshariy Izdoshlari Maktabi uchun o'quvchilarni test qilish, natijalarni saqlash va oylik reyting yuritish platformasi. Sof HTML/CSS/JavaScript (build vositasisiz), ma'lumotlar brauzerning `localStorage`'ida saqlanadi.
+Zamaxshariy Izdoshlari Maktabi uchun o'quvchilarni test qilish, natijalarni saqlash va oylik reyting yuritish platformasi. Frontend — sof HTML/CSS/JavaScript (build vositasisiz); backend — Supabase (Postgres + Auth + Edge Functions).
+
+## Arxitektura
+
+- **Frontend**: statik sayt, hech qanday build qadam kerak emas.
+- **Baza**: Supabase Postgres — `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets` jadvallari, barchasi Row Level Security bilan himoyalangan.
+- **Auth**: Supabase Auth (email/parol) — bitta admin akkaunt, `is_admin()` funksiyasi orqali RLS siyosatlariga bog'langan.
+- **Edge Functions** (`supabase/functions/` — Supabase loyihasida joylashgan, bu repoda emas):
+  - `get-test` — tanlangan sinf/fan uchun savollarni **to'g'ri javobsiz** qaytaradi va urinishlar limitini tekshiradi.
+  - `submit-result` — javoblarni serverda baholaydi, natijani bazaga yozadi, Telegram xabarnomasini yuboradi (bot tokeni faqat serverda).
+  - `reveal-answers` — o'qituvchi paroli tekshirilgach, to'g'ri javoblarni qaytaradi.
+  - `bootstrap-admin` — bir martalik admin yaratish funksiyasi (endi o'chirilgan/neytrallashtirilgan).
+
+Bu arxitektura tufayli **to'g'ri javoblar, admin paroli va Telegram tokeni hech qachon brauzerga to'liq jo'natilmaydi** — hammasi server tomonida (Edge Function ichida, `service_role` kaliti bilan) ishlanadi.
 
 ## Loyiha tuzilishi
 
@@ -10,8 +23,8 @@ Ustozpro/
 ├── css/
 │   └── style.css           — barcha uslublar
 ├── js/
-│   ├── app.js               — ilova mantig'i (ekranlar, test, admin, reyting, eksport)
-│   ├── config.js             — maxfiy sozlamalar (.gitignore'da, GitHub'ga yuklanmaydi)
+│   ├── app.js               — ilova mantig'i (Supabase client, ekranlar, test, admin, reyting, eksport)
+│   ├── config.js             — muhitga xos sozlamalar (.gitignore'da)
 │   └── config.example.js     — config.js uchun namuna/shablon
 ├── .gitignore
 └── README.md
@@ -19,7 +32,7 @@ Ustozpro/
 
 ## Ishga tushirish (lokal)
 
-Bu statik sayt — server kerak emas, lekin `fetch()` chaqiruvlari (Google Sheets, Supabase, Telegram) `file://` protokolida ba'zi brauzerlarda bloklanishi mumkin, shuning uchun lokal server orqali ochish tavsiya etiladi:
+Statik fayllarni to'g'ridan-to'g'ri `file://` orqali ochish tavsiya etilmaydi (ba'zi brauzerlar module/fetch so'rovlarini bloklaydi). Har qanday statik server ishlaydi:
 
 ```bash
 cd Ustozpro
@@ -30,28 +43,37 @@ Keyin brauzerda: `http://localhost:8080`
 
 ## Sozlash (`js/config.js`)
 
-`js/config.js` fayli `.gitignore`'da bo'lgani uchun repozitoriyga tushmaydi. Loyihani birinchi marta klonlaganda `js/config.example.js`'ni nusxalab `js/config.js` deb saqlang va o'z qiymatlaringizni kiriting:
+`js/config.js` `.gitignore`'da (muhitga xos bo'lgani uchun, sirlar uchun emas). `js/config.example.js`'ni nusxalab `js/config.js` deb saqlang va o'z Supabase loyihangiz qiymatlarini kiriting:
 
-- `TG_TOKEN`, `TG_CHAT` — Telegram bot orqali natija xabarnomalari yuborish uchun (@BotFather)
-- `SHEET_CSV` — Google Sheets'da savollar jadvali ("Publish to web → CSV" havolasi)
-- `SUPABASE_URL` — natijalarni serverga saqlaydigan Supabase Edge Function manzili
-- `ADMIN_LOGIN` / `ADMIN_PASS` — admin panelga kirish
-- `ANSWER_PASS` — natija sahifasida "to'g'ri javoblarni ko'rish" paroli
+- `SUPABASE_URL`, `SUPABASE_ANON_KEY` — Supabase loyiha sozlamalaridan (Project Settings → API). Bular **maxfiy emas** — anon key faqat RLS orqali cheklangan ochiq API kaliti.
+- `ADMIN_EMAIL` — admin panelga kirish uchun Supabase Auth'da yaratilgan foydalanuvchi emaili.
 
-## ⚠️ Muhim xavfsizlik eslatmasi
+## Backendni birinchi marta sozlash (yangi Supabase loyihasida)
 
-Bu sof frontend (backend/server yo'q), shuning uchun `config.js` ichidagi barcha qiymatlar — Telegram bot tokeni, admin paroli, javoblarni ko'rish paroli — sahifa manba kodida (`view-source`) har doim ko'rinadi. Bu quyidagilarni anglatadi:
+1. `supabase/migrations` orqali quyidagi jadvallarni yarating: `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets` — barchasida RLS yoqilgan, faqat admin (`is_admin()`) yozishi mumkin, `questions`/`results`/`app_secrets` anon uchun umuman o'qilmaydi.
+2. `app_secrets` jadvaliga `TG_TOKEN`, `TG_CHAT`, `ANSWER_PASS` qiymatlarini kiriting (faqat Edge Function'lar `service_role` orqali o'qiy oladi).
+3. Supabase Auth'da bitta admin foydalanuvchi yarating, uning UUID'sini `is_admin()` funksiyasiga yozing.
+4. `get-test`, `submit-result`, `reveal-answers` Edge Function'larini deploy qiling.
+5. `js/config.js`'ga yangi loyihaning URL/anon key'ini yozing.
 
-- Har qanday o'quvchi brauzer konsolidan yoki "view source" orqali admin parolini va to'g'ri javoblar parolini topishi mumkin.
-- Telegram bot tokenini bilgan har kim o'sha bot nomidan xabar yubora oladi.
+## Savollarni qo'shish
 
-`config.js` `.gitignore`ga qo'shilgani sababli **GitHub repozitoriyga hech qachon yuklanmaydi** — bu maxfiylikni oshiradi, lekin sahifani ko'rgan har bir foydalanuvchi baribur qiymatlarni ko'ra oladi, chunki ular brauzerga jo'natiladi. Haqiqiy himoya uchun kelajakda quyidagilar tavsiya etiladi: admin autentifikatsiyasi va Telegram xabarlarini serverga (masalan, mavjud Supabase Edge Function'ga) ko'chirish, parolni faqat backend orqali tekshirish.
+Ikki yo'l bor:
+
+- **Qo'lda**: Admin panel → Boshqarish → Savollar — sinf va fanni tanlab, savol/variantlar/to'g'ri javob/izohni kiritasiz.
+- **Ommaviy import**: Admin panel → Bazani yangilash — eski Google Sheets havolasini (CSV) kiritib, "Import qilish" tugmasini bosasiz. Ustunlar tartibi: Sinf, Fan, Savol, A, B, C, D, To'g'ri javob (a/b/c/d), Izoh. Sinf ustunida bir nechta sinf ham qo'llab-quvvatlanadi ("5,6,7" yoki "5-8").
+
+## Xavfsizlik
+
+- `questions.correct_option` va `results` jadvallari anon foydalanuvchiga hech qachon to'g'ridan-to'g'ri REST orqali ko'rinmaydi (RLS bilan tekshirilgan).
+- Test paytida savollar `get-test` orqali **to'g'ri javobsiz** yuboriladi; baholash `submit-result`da serverda amalga oshadi.
+- "To'g'ri javoblarni ko'rish" paroli ham serverda (`reveal-answers`) tekshiriladi — parol noto'g'ri bo'lsa hech qanday javob qaytmaydi.
+- Admin autentifikatsiyasi haqiqiy Supabase Auth orqali; RLS siyosatlari faqat bitta belgilangan admin UUID'siga yozishga ruxsat beradi (boshqa birov `signUp` qilsa ham yozolmaydi).
 
 ## Texnologiyalar
 
 - Vanilla JavaScript (ES6+), CSS custom properties
 - [jsPDF](https://github.com/parallax/jsPDF) + AutoTable — PDF eksport
 - [SheetJS](https://sheetjs.com/) — Excel eksport
-- Google Sheets — savollar bazasi manbai (CSV)
-- Supabase Edge Function — natijalarni saqlash
-- Telegram Bot API — natija xabarnomalari
+- [Supabase](https://supabase.com/) — Postgres, Auth, Edge Functions
+- Telegram Bot API — natija xabarnomalari (server tomonidan yuboriladi)
