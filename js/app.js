@@ -63,6 +63,7 @@ let settings = {
 };
 
 let testState = {
+  sessionId: null,       // get-test qaytargan bir martalik test_sessions bileti — submit-result/reveal-answers shu orqali ishlaydi
   questions: [], bookmarks: new Set(), cheats: 0,
   startTime: null, totalSecs: 0, remainingSecs: 0, timerInterval: null,
   studentName: '', className: '', subjectName: '',
@@ -579,6 +580,7 @@ function saveSession() {
     if (sel) answers[i] = sel.value;
   }
   localStorage.setItem(sessionStorageKey(), JSON.stringify({
+    sessionId:testState.sessionId,
     questions:testState.questions, bookmarks:[...testState.bookmarks],
     cheats:testState.cheats, startTime:testState.startTime?.toISOString(),
     totalSecs:testState.totalSecs, remainingSecs:testState.remainingSecs,
@@ -622,6 +624,7 @@ function resumeSession() {
   const elapsed = Math.floor((Date.now()-new Date(session.startTime).getTime())/1000);
   const remaining = session.totalSecs - elapsed;
   if (remaining<=0) { clearSession(); showToast('⏰','Sessiya muddati tugagan!','error'); document.getElementById('resumeBanner')?.remove(); return; }
+  testState.sessionId=session.sessionId||null;
   testState.questions=session.questions; testState.bookmarks=new Set(session.bookmarks||[]);
   testState.cheats=session.cheats||0; testState.startTime=new Date(session.startTime);
   testState.totalSecs=session.totalSecs; testState.remainingSecs=remaining;
@@ -1440,6 +1443,7 @@ async function startTest() {
   if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
 
   clearSession();
+  testState.sessionId = resp.session_id;
   testState.questions = resp.questions.map(q=>({id:q.id, q:q.question_text, a:q.option_a, b:q.option_b, c:q.option_c, d:q.option_d, hint:q.hint}));
   testState.bookmarks = new Set();
   testState.cheats = 0;
@@ -1598,14 +1602,16 @@ async function finishTest(){
   let resp;
   try {
     resp = await callEdgeFunction('submit-result', {
-      subject_name: testState.subjectName,
-      question_ids: testState.questions.map(q=>q.id),
+      session_id: testState.sessionId,
       answers: testState.lastAnswers,
       cheat_count: testState.cheats,
       elapsed_seconds: elapsed
     });
   } catch(e) { showToast('❌','Natijani yuborishda xatolik','error'); return; }
   if (resp.error==='unauthorized'||resp.error==='not_a_student') { showToast('❌','Sessiya muddati tugagan, qayta kiring','error'); doLogout(); return; }
+  if (resp.error==='session_expired') { showToast('⏰','Test vaqti tugagan, yangi test boshlang','error'); navigateTo('student'); return; }
+  if (resp.error==='session_already_used'||resp.error==='invalid_session') { showToast('❌','Bu test allaqachon topshirilgan','error'); navigateTo('student'); return; }
+  if (resp.error==='attempt_limit_reached') { showToast('🚫','Urinishlar soni tugadi!','error'); navigateTo('student'); return; }
   if (resp.error) { showToast('❌','Xatolik: '+resp.error,'error'); return; }
 
   testState.lastWrongReview = resp.wrong_review||[];
@@ -1677,7 +1683,7 @@ function closeAnswerLockModal(){document.getElementById('answerLockOverlay').cla
 async function checkAnswerPassword(){
   const inp=document.getElementById('answerPasswordInput');
   let resp;
-  try { resp = await callEdgeFunction('reveal-answers', { question_ids: testState.questions.map(q=>q.id), password: inp.value }); }
+  try { resp = await callEdgeFunction('reveal-answers', { session_id: testState.sessionId, password: inp.value }); }
   catch(e) { showToast('❌','Xatolik','error'); return; }
   if (resp.error==='wrong_password') {
     inp.classList.add('error'); setTimeout(()=>inp.classList.remove('error'),600);

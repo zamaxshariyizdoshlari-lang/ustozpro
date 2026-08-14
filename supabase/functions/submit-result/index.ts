@@ -2,6 +2,13 @@
 // va Telegram xabarnomasini yuboradi (bot tokeni faqat shu yerda, service_role orqali).
 // Chaqiruvchi kimligi (sinf/ism) sessiya tokenidan (student_accounts orqali)
 // serverda aniqlanadi, mijoz yuborgan qiymatga ishonilmaydi.
+//
+// Savollar ro'yxati ham mijozdan emas, get-test yaratgan bir martalik
+// "test_sessions" biletidan olinadi — bilet faqat shu o'quvchiga tegishli,
+// muddati o'tmagan va hali ishlatilmagan bo'lishi kerak, va faqat bir marta
+// ishlatiladi. Bu identifikatsiya soxtalashtirish, urinishlar chegarasini
+// chetlab o'tish va javoblarni asta-sekin "taxmin qilib topish" hujumlarining
+// oldini oladi.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -38,8 +45,31 @@ Deno.serve(async (req: Request) => {
     const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).single();
     const { data: cls } = await supabase.from("classes").select("id, name").eq("id", student.class_id).single();
 
-    const { subject_name, question_ids, answers, cheat_count, elapsed_seconds } = await req.json();
-    if (!subject_name || !Array.isArray(question_ids)) return json({ error: "missing_fields" }, 400);
+    const { session_id, answers, cheat_count, elapsed_seconds } = await req.json();
+    if (!session_id) return json({ error: "missing_fields" }, 400);
+
+    const { data: session } = await supabase.from("test_sessions").select("*").eq("id", session_id).maybeSingle();
+    if (!session || session.student_id !== student.id) return json({ error: "invalid_session" }, 403);
+    if (session.consumed_at) return json({ error: "session_already_used" }, 409);
+    if (new Date(session.expires_at).getTime() < Date.now()) return json({ error: "session_expired" }, 410);
+
+    const { data: subj } = await supabase.from("subjects").select("name").eq("id", session.subject_id).single();
+    const subject_name = subj.name;
+    const question_ids: string[] = session.question_ids;
+
+    const { data: settings } = await supabase.from("settings").select("*").eq("id", 1).single();
+    if (settings?.enable_attempt_limit) {
+      const { count: attemptCount } = await supabase
+        .from("results")
+        .select("id", { count: "exact", head: true })
+        .eq("student_name", student.full_name)
+        .eq("class_name", cls.name)
+        .eq("subject_name", subject_name);
+      const maxAttempts = settings.max_attempts ?? 3;
+      if ((attemptCount ?? 0) >= maxAttempts) {
+        return json({ error: "attempt_limit_reached", max_attempts: maxAttempts });
+      }
+    }
 
     const student_name = student.full_name;
     const class_name = cls.name;
@@ -86,6 +116,10 @@ Deno.serve(async (req: Request) => {
 
     if (insErr || !inserted) return json({ error: "insert_failed" }, 500);
 
+    // Bilet faqat bir marta ishlatiladi — qayta submit qilishga (yoki javob-taxmin
+    // qilish hujumiga) endi imkon yo'q.
+    await supabase.from("test_sessions").update({ consumed_at: new Date().toISOString() }).eq("id", session_id);
+
     // Telegram xabarnomasi — muvaffaqiyatsiz bo'lsa ham natija allaqachon saqlangan
     try {
       const { data: tgTokenRow } = await supabase.from("app_secrets").select("value").eq("key", "TG_TOKEN").maybeSingle();
@@ -107,7 +141,7 @@ Deno.serve(async (req: Request) => {
       // Telegram xatoligi natijani saqlashga ta'sir qilmaydi
     }
 
-    return json({ result: inserted, wrong_review });
+    return json({ result: inserted, wrong_review, session_id });
   } catch (e) {
     return json({ error: "server_error", message: String(e) }, 500);
   }

@@ -3,6 +3,9 @@
 // Chaqiruvchi kimligi (sinf/ism) mijoz aytgan qiymatdan EMAS, sessiya tokenidan
 // (student_accounts orqali) serverda aniqlanadi — boshqa o'quvchi nomidan
 // test topshirish endi mumkin emas.
+//
+// Tanlangan savollar bir martalik "test_sessions" biletiga yoziladi — submit-result
+// endi mijoz yuborgan savol ro'yxatiga emas, shu biletga ishonadi.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -79,7 +82,27 @@ Deno.serve(async (req: Request) => {
     const wanted = Math.max(1, Math.min(count || 15, questions.length));
     const picked = shuffle(questions).slice(0, wanted);
 
-    return json({ questions: picked, student: { full_name: student.full_name, class_name: cls.name } });
+    const timeLimitMin = settings?.time_limit_minutes ?? 20;
+    const expiresAt = new Date(Date.now() + (timeLimitMin + 10) * 60 * 1000).toISOString();
+
+    const { data: session, error: sessErr } = await supabase
+      .from("test_sessions")
+      .insert({
+        student_id: student.id,
+        subject_id: subj.id,
+        question_ids: picked.map((q) => q.id),
+        expires_at: expiresAt,
+      })
+      .select("id")
+      .single();
+
+    if (sessErr || !session) return json({ error: "session_create_failed" }, 500);
+
+    return json({
+      session_id: session.id,
+      questions: picked,
+      student: { full_name: student.full_name, class_name: cls.name },
+    });
   } catch (e) {
     return json({ error: "server_error", message: String(e) }, 500);
   }
