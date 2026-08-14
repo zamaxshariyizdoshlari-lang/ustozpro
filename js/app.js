@@ -468,7 +468,20 @@ function fmtDate(iso) { return iso ? new Date(iso).toLocaleString('uz-UZ') : '�
 /* ═══════════════════════════════════════════════
    RESULTS TABLE (admin)
 ═══════════════════════════════════════════════ */
-function renderResultsTable() {
+// Ro'yxatlar 50 tadan ko'rsatiladi, qolgani "Yana ko'rsatish" bosilganda qo'shiladi
+// (server so'rovini takrorlamasdan, allaqachon olingan massivni ko'proq ochib berish).
+function loadMoreRowHtml(totalCount, visibleCount, colspan, onClickFnName) {
+  if (visibleCount >= totalCount) return '';
+  return `<tr><td colspan="${colspan}" style="text-align:center;padding:14px"><button class="btn btn-secondary btn-sm" onclick="${onClickFnName}()">Yana ko'rsatish (${totalCount - visibleCount} ta qoldi)</button></td></tr>`;
+}
+function loadMoreDivHtml(totalCount, visibleCount, onClickFnName) {
+  if (visibleCount >= totalCount) return '';
+  return `<div style="text-align:center;padding:14px"><button class="btn btn-secondary btn-sm" onclick="${onClickFnName}()">Yana ko'rsatish (${totalCount - visibleCount} ta qoldi)</button></div>`;
+}
+
+let resultsVisibleCount = 50;
+function renderResultsTable(resetPage=true) {
+  if (resetPage) resultsVisibleCount = 50;
   const fcls = document.getElementById('filterClass')?.value||'';
   const fsub = document.getElementById('filterSubject')?.value||'';
   let rows = adminResults||[];
@@ -480,7 +493,8 @@ function renderResultsTable() {
     tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:28px;color:var(--text-dim)">Ma\'lumot yo\'q</td></tr>';
     return;
   }
-  tbody.innerHTML = rows.map((r,i)=>{
+  const visible = rows.slice(0, resultsVisibleCount);
+  tbody.innerHTML = visible.map((r,i)=>{
     const pct = r.percent||0;
     const cls = pct>=70?'high':pct>=50?'mid':'low';
     return `<tr>
@@ -494,8 +508,9 @@ function renderResultsTable() {
       <td style="color:${r.cheat_count>0?'var(--danger)':'var(--success)'};font-weight:700">${r.cheat_count||0}</td>
       <td style="font-size:11px;color:var(--text-dim)">${fmtDate(r.created_at)}</td>
     </tr>`;
-  }).join('');
+  }).join('') + loadMoreRowHtml(rows.length, resultsVisibleCount, 9, 'showMoreResults');
 }
+function showMoreResults() { resultsVisibleCount += 50; renderResultsTable(false); }
 
 /* ═══════════════════════════════════════════════
    RATING SYSTEM
@@ -1181,15 +1196,18 @@ async function renderQuestionList() {
   allQuestions = data||[];
   renderFilteredQuestions();
 }
-function renderFilteredQuestions() {
+let questionsVisibleCount = 50;
+function renderFilteredQuestions(resetPage=true) {
+  if (resetPage) questionsVisibleCount = 50;
   const area=document.getElementById('questionListArea');
   const term=(document.getElementById('qSearchInput')?.value||'').trim().toLowerCase();
   document.getElementById('questionCount').innerText=allQuestions.length;
   const list = term ? allQuestions.filter(q=>q.question_text.toLowerCase().includes(term)) : allQuestions;
-  area.innerHTML=list.length===0
-    ?`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`
-    :list.map(q=>`<div class="list-item ${editingQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="editQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="removeQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('');
+  if (list.length===0) { area.innerHTML=`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`; return; }
+  const visible = list.slice(0, questionsVisibleCount);
+  area.innerHTML=visible.map(q=>`<div class="list-item ${editingQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="editQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="removeQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('') + loadMoreDivHtml(list.length, questionsVisibleCount, 'showMoreQuestions');
 }
+function showMoreQuestions() { questionsVisibleCount += 50; renderFilteredQuestions(false); }
 function editQuestion(id) {
   const q = allQuestions.find(x=>x.id===id);
   if (!q) return;
@@ -1338,15 +1356,18 @@ async function teacherRenderQuestionList() {
   teacherQuestions = data||[];
   teacherRenderFilteredQuestions();
 }
-function teacherRenderFilteredQuestions() {
+let teacherQuestionsVisibleCount = 50;
+function teacherRenderFilteredQuestions(resetPage=true) {
+  if (resetPage) teacherQuestionsVisibleCount = 50;
   const area=document.getElementById('tQuestionListArea');
   const term=(document.getElementById('tQSearchInput')?.value||'').trim().toLowerCase();
   document.getElementById('tQuestionCount').innerText=teacherQuestions.length;
   const list = term ? teacherQuestions.filter(q=>q.question_text.toLowerCase().includes(term)) : teacherQuestions;
-  area.innerHTML=list.length===0
-    ?`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`
-    :list.map(q=>`<div class="list-item ${editingTeacherQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="teacherEditQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="teacherRemoveQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('');
+  if (list.length===0) { area.innerHTML=`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`; return; }
+  const visible = list.slice(0, teacherQuestionsVisibleCount);
+  area.innerHTML=visible.map(q=>`<div class="list-item ${editingTeacherQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="teacherEditQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="teacherRemoveQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('') + loadMoreDivHtml(list.length, teacherQuestionsVisibleCount, 'showMoreTeacherQuestions');
 }
+function showMoreTeacherQuestions() { teacherQuestionsVisibleCount += 50; teacherRenderFilteredQuestions(false); }
 function teacherEditQuestion(id) {
   const q = teacherQuestions.find(x=>x.id===id);
   if (!q) return;
@@ -1466,7 +1487,9 @@ async function teacherBulkAddQuestions() {
 /* ═══════════════════════════════════════════════
    RESULTS TABLE (teacher) — RLS orqali faqat o'z faniga cheklangan
 ═══════════════════════════════════════════════ */
-function teacherRenderResultsTable() {
+let teacherResultsVisibleCount = 50;
+function teacherRenderResultsTable(resetPage=true) {
+  if (resetPage) teacherResultsVisibleCount = 50;
   const fcls = document.getElementById('tFilterClass')?.value||'';
   const fsub = document.getElementById('tFilterSubject')?.value||'';
   let rows = teacherResults||[];
@@ -1478,7 +1501,8 @@ function teacherRenderResultsTable() {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--text-dim)">Ma\'lumot yo\'q</td></tr>';
     return;
   }
-  tbody.innerHTML = rows.map((r,i)=>{
+  const visible = rows.slice(0, teacherResultsVisibleCount);
+  tbody.innerHTML = visible.map((r,i)=>{
     const pct = r.percent||0;
     const cls = pct>=70?'high':pct>=50?'mid':'low';
     return `<tr>
@@ -1491,8 +1515,9 @@ function teacherRenderResultsTable() {
       <td style="font-size:11px;color:var(--text-dim)">${fmtDate(r.created_at)}</td>
       <td><button class="li-del" onclick="teacherDeleteResult('${r.id}')" title="O'chirish">🗑️</button></td>
     </tr>`;
-  }).join('');
+  }).join('') + loadMoreRowHtml(rows.length, teacherResultsVisibleCount, 8, 'showMoreTeacherResults');
 }
+function showMoreTeacherResults() { teacherResultsVisibleCount += 50; teacherRenderResultsTable(false); }
 async function teacherDeleteResult(id) {
   if (!confirm('Bu natijani o\'chirasizmi?')) return;
   const { error } = await supabaseClient.from('results').delete().eq('id', id);
