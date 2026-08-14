@@ -562,6 +562,7 @@ async function clearAllResults() {
   if (!ok) return;
   const { error } = await supabaseClient.from('results').delete().neq('id','00000000-0000-0000-0000-000000000000');
   if (error) { showToast('❌','O\'chirishda xatolik','error'); return; }
+  supabaseClient.rpc('admin_log_event', { p_action: 'clear_all_results' });
   adminResults = [];
   renderResultsTable(); renderRatingPanel(); updateDashboardStats(); renderRecentResults();
   showToast('🗑️','Barcha natijalar o\'chirildi','info');
@@ -817,6 +818,7 @@ async function removeClass(id,name) {
   if (!ok) return;
   const { error } = await supabaseClient.from('classes').delete().eq('id', id);
   if (error) { showToast('❌','O\'chirishda xatolik','error'); return; }
+  supabaseClient.rpc('admin_log_event', { p_action: 'delete_class', p_target_info: { class_id: id, name } });
   await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
   populateClassSelects(); renderClassList();
   showToast('🗑️',`"${name}" o'chirildi.`,'info'); updateDashboardStats();
@@ -853,6 +855,7 @@ async function addStudent() {
 async function removeStudent(id,name) {
   const { error } = await supabaseClient.from('students').delete().eq('id', id);
   if (error) { showToast('❌','Xatolik','error'); return; }
+  supabaseClient.rpc('admin_log_event', { p_action: 'delete_student', p_target_info: { student_id: id, name } });
   await refreshAllStudents();
   renderStudentList(); renderClassList();
   showToast('🗑️',`"${name}" o'chirildi.`,'info'); updateDashboardStats();
@@ -988,6 +991,71 @@ async function removeTeacher(id, name) {
 }
 
 /* ═══════════════════════════════════════════════
+   ADMIN ACCOUNT MANAGEMENT — ko'p-adminlik + audit jurnali
+═══════════════════════════════════════════════ */
+let adminAddBusy = false;
+async function addAdmin() {
+  if (adminAddBusy) return;
+  const full_name = document.getElementById('newAdminName').value.trim();
+  const email = document.getElementById('newAdminEmail').value.trim();
+  const password = document.getElementById('newAdminPassword').value;
+  if (!full_name) { showToast('⚠️','To\'liq ismni kiriting!','warning'); return; }
+  if (!email || !email.includes('@')) { showToast('⚠️','To\'g\'ri email kiriting!','warning'); return; }
+  if (!password || password.length < 6) { showToast('⚠️','Parol kamida 6 belgidan iborat bo\'lsin!','warning'); return; }
+
+  adminAddBusy = true;
+  const { error } = await supabaseClient.rpc('admin_create_admin', { p_full_name: full_name, p_email: email, p_password: password });
+  adminAddBusy = false;
+  if (error) {
+    const msg = error.message?.includes('duplicate') || error.code==='23505' ? 'Bu email allaqachon band!' : 'Xatolik yuz berdi';
+    showToast('❌', msg, 'error');
+    return;
+  }
+  document.getElementById('newAdminName').value='';
+  document.getElementById('newAdminEmail').value='';
+  document.getElementById('newAdminPassword').value='';
+  await renderAdminAccList();
+  showToast('✅',`"${full_name}" admin sifatida qo'shildi!`,'success');
+}
+async function renderAdminAccList() {
+  const list = document.getElementById('adminAccList'); if (!list) return;
+  const { data, error } = await supabaseClient.rpc('admin_list_admins');
+  if (error) { list.innerHTML = `<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
+  const admins = data || [];
+  const myId = (await supabaseClient.auth.getUser()).data.user?.id;
+  document.getElementById('adminAccCount').innerText = admins.length;
+  list.innerHTML = admins.length===0
+    ? '<div class="empty-state">Adminlar yo\'q.</div>'
+    : admins.map(a=>`<div class="list-item"><div class="li-icon">🛡️</div><span class="li-text"><b>${esc(a.full_name)}</b>${a.id===myId?' <span style="color:var(--text-dim);font-size:11px">(siz)</span>':''} — ${esc(a.email)}</span>${a.id===myId?'':`<button class="li-del" onclick="removeAdmin('${a.id}','${a.full_name.replace(/'/g,"\\'")}')" title="O'chirish">🗑️</button>`}</div>`).join('');
+}
+async function removeAdmin(id, name) {
+  const ok = await askTypeConfirm(`"${name}" adminni o'chirish`, `Uning hisobi butunlay o'chadi, login endi ishlamaydi.`, name);
+  if (!ok) return;
+  const { error } = await supabaseClient.rpc('admin_delete_admin', { p_admin_id: id });
+  if (error) {
+    const msg = error.message?.includes('cannot_delete_last_admin') ? 'Oxirgi adminni o\'chirib bo\'lmaydi!' : 'Xatolik yuz berdi';
+    showToast('❌', msg, 'error');
+    return;
+  }
+  await renderAdminAccList();
+  showToast('🗑️',`"${name}" o'chirildi.`,'info');
+}
+async function renderAuditLog() {
+  const body = document.getElementById('auditLogBody'); if (!body) return;
+  const { data, error } = await supabaseClient.rpc('admin_list_audit_log', { p_limit: 200 });
+  if (error) { body.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:22px;color:var(--text-dim)">Xatolik: ${esc(error.message)}</td></tr>`; return; }
+  const rows = data || [];
+  body.innerHTML = rows.length===0
+    ? '<tr><td colspan="4" style="text-align:center;padding:22px;color:var(--text-dim)">Hali harakat yo\'q</td></tr>'
+    : rows.map(r=>`<tr>
+        <td style="font-size:11px;color:var(--text-dim)">${fmtDate(r.created_at)}</td>
+        <td>${esc(r.actor_role||'—')}</td>
+        <td>${esc(r.action)}</td>
+        <td style="font-size:11px;color:var(--text-dim)">${esc(JSON.stringify(r.target_info||{}))}</td>
+      </tr>`).join('');
+}
+
+/* ═══════════════════════════════════════════════
    SUBJECT MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
 async function addSubject() {
@@ -1010,6 +1078,7 @@ async function addSubject() {
 async function removeSubject(id,name) {
   const { error } = await supabaseClient.from('subjects').delete().eq('id', id);
   if (error) { showToast('❌','Xatolik','error'); return; }
+  supabaseClient.rpc('admin_log_event', { p_action: 'delete_subject', p_target_info: { subject_id: id, name } });
   await refreshAllSubjects();
   renderSubjectList();
   showToast('🗑️',`"${name}" fani o'chirildi.`,'info');
@@ -1379,13 +1448,14 @@ async function teacherDeleteResult(id) {
    MANAGE TABS
 ═══════════════════════════════════════════════ */
 function switchMTab(tab) {
-  ['classes','students','subjects','questions','teachers'].forEach(t=>{
+  ['classes','students','subjects','questions','teachers','admins'].forEach(t=>{
     document.getElementById(`mtab-${t}`)?.classList.toggle('active',t===tab);
     document.getElementById(`mpanel-${t}`)?.classList.toggle('active',t===tab);
   });
   if (tab==='students') renderStudentList();
   if (tab==='subjects') renderSubjectList();
   if (tab==='teachers') { renderTeacherSubjectCheckboxes(); renderTeacherList(); }
+  if (tab==='admins') { renderAdminAccList(); renderAuditLog(); }
 }
 
 /* ═══════════════════════════════════════════════
