@@ -293,7 +293,7 @@ async function resolveCurrentRole() {
   const { data: isAdminRes } = await supabaseClient.rpc('is_admin');
   if (isAdminRes) {
     adminLoggedIn = true; teacherLoggedIn = false; studentLoggedIn = false;
-    teacherSubjects = []; teacherName = ''; studentInfo = null;
+    teacherSubjects = []; teacherName = ''; studentInfo = null; mustChangePassword = false;
     await enterAdminMode();
     return 'admin';
   }
@@ -302,6 +302,7 @@ async function resolveCurrentRole() {
   if (tInfo && tInfo.full_name) {
     adminLoggedIn = false; teacherLoggedIn = true; studentLoggedIn = false;
     teacherSubjects = tInfo.subject_names || []; teacherName = tInfo.full_name; studentInfo = null;
+    mustChangePassword = !!tInfo.must_change_password;
     await enterTeacherMode();
     return 'teacher';
   }
@@ -310,6 +311,7 @@ async function resolveCurrentRole() {
   if (sInfo && sInfo.full_name) {
     adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = true;
     teacherSubjects = []; teacherName = ''; studentInfo = sInfo;
+    mustChangePassword = !!sInfo.must_change_password;
     await enterStudentMode();
     return 'student';
   }
@@ -340,6 +342,16 @@ async function enterAdminMode() {
   renderRecentResults();
   navigateTo('home');
 }
+// Admin bergan (yoki tiklagan) parol vaqtinchalik hisoblanadi — o'zi almashtirmaguncha
+// panelning qolgan qismi (savol/natija/test bo'limlari) ko'rinmaydi.
+let mustChangePassword = false;
+function applyForcedPasswordGate() {
+  const prefix = teacherLoggedIn ? 't' : 'stu';
+  const banner = document.getElementById(`${prefix}ForcedPassBanner`);
+  const normal = document.getElementById(`${prefix}NormalContent`);
+  if (banner) banner.style.display = mustChangePassword ? '' : 'none';
+  if (normal) normal.style.display = mustChangePassword ? 'none' : '';
+}
 async function enterTeacherMode() {
   hideAuthGate();
   applyRoleNav('teacher');
@@ -350,6 +362,7 @@ async function enterTeacherMode() {
   document.getElementById('tPanelSubjects').innerText = teacherSubjects.join(', ') || '—';
   populateClassSelects();
   teacherPopulateFilters();
+  applyForcedPasswordGate();
   navigateTo('teacher');
 }
 async function enterStudentMode() {
@@ -363,6 +376,7 @@ async function enterStudentMode() {
   populateStudentTestSubjectSelect();
   await computeStudentEffectiveSettings();
   applySettingsToTestSetup();
+  applyForcedPasswordGate();
   navigateTo('student');
   checkForResumeSession();
 }
@@ -989,6 +1003,38 @@ function copyBulkCredList() {
   const text = rows.map(r=>`${r.full_name} (${r.class_name}) — login: ${r.login}, parol: ${r.password}`).join('\n');
   navigator.clipboard.writeText(text).then(()=>showToast('📋','Nusxalandi!','success')).catch(()=>showToast('❌','Nusxalashda xatolik','error'));
 }
+function exportBulkCredExcel() {
+  if (typeof XLSX==='undefined') { showToast('❌','XLSX kutubxonasi yuklanmadi','error'); return; }
+  const rows = window.__lastBulkCred || [];
+  if (rows.length===0) return;
+  const wsData = [['Ism','Sinf','Login','Parol'], ...rows.map(r=>[r.full_name, r.class_name, r.login, r.password])];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Login-parollar');
+  XLSX.writeFile(wb, `UstazPro_Login_Parollar_${new Date().toLocaleDateString('uz-UZ').replace(/\//g,'-')}.xlsx`);
+  showToast('📥','Excel fayl yuklab olindi!','success');
+}
+function exportBulkCredPDF() {
+  if (typeof window.jspdf==='undefined') { showToast('❌','jsPDF kutubxonasi yuklanmadi','error'); return; }
+  const rows = window.__lastBulkCred || [];
+  if (rows.length===0) return;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  doc.setFontSize(14);
+  doc.text('Ustoz Pro - O\'quvchilar login-parollari', 14, 16);
+  doc.setFontSize(10);
+  doc.text(`Sanasi: ${new Date().toLocaleDateString('uz-UZ')}`, 14, 23);
+  doc.autoTable({
+    startY:28,
+    head:[['Ism','Sinf','Login','Parol']],
+    body: rows.map(r=>[r.full_name, r.class_name, r.login, r.password]),
+    styles:{fontSize:9,cellPadding:3},
+    headStyles:{fillColor:[79,70,229],textColor:255},
+    alternateRowStyles:{fillColor:[238,242,255]}
+  });
+  doc.save(`UstazPro_Login_Parollar_${new Date().toLocaleDateString('uz-UZ').replace(/\//g,'-')}.pdf`);
+  showToast('📄','PDF yuklab olindi!','success');
+}
 
 /* ═══════════════════════════════════════════════
    TEACHER MANAGEMENT (admin) — fan bo'yicha cheklangan o'qituvchi hisoblari
@@ -1402,6 +1448,49 @@ async function teacherDeleteResult(id) {
   teacherResults = teacherResults.filter(r=>r.id!==id);
   teacherRenderResultsTable();
   showToast('🗑️','Natija o\'chirildi.','info');
+}
+function teacherFilteredResults() {
+  const fcls = document.getElementById('tFilterClass')?.value||'';
+  const fsub = document.getElementById('tFilterSubject')?.value||'';
+  let rows = teacherResults||[];
+  if (fcls) rows = rows.filter(r=>r.class_name===fcls);
+  if (fsub) rows = rows.filter(r=>r.subject_name===fsub);
+  return rows;
+}
+function teacherExportToExcel() {
+  if (typeof XLSX==='undefined') { showToast('❌','XLSX kutubxonasi yuklanmadi','error'); return; }
+  const rows = teacherFilteredResults();
+  if (rows.length===0) { showToast('⚠️','Chiqarish uchun ma\'lumot yo\'q','warning'); return; }
+  const wsData = [
+    ['#','Ism','Sinf','Fan','To\'g\'ri','Jami','Foiz (%)','Sana'],
+    ...rows.map((r,i)=>[i+1,r.student_name,r.class_name,r.subject_name,r.score,r.total,r.percent,fmtDate(r.created_at)])
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Natijalar');
+  XLSX.writeFile(wb, `UstazPro_Natijalar_${new Date().toLocaleDateString('uz-UZ').replace(/\//g,'-')}.xlsx`);
+  showToast('📥','Excel fayl yuklab olindi!','success');
+}
+function teacherExportToPDF() {
+  if (typeof window.jspdf==='undefined') { showToast('❌','jsPDF kutubxonasi yuklanmadi','error'); return; }
+  const rows = teacherFilteredResults();
+  if (rows.length===0) { showToast('⚠️','Chiqarish uchun ma\'lumot yo\'q','warning'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({orientation:'landscape'});
+  doc.setFontSize(14);
+  doc.text('Ustoz Pro - Test Natijalari', 14, 16);
+  doc.setFontSize(10);
+  doc.text(`Sanasi: ${new Date().toLocaleDateString('uz-UZ')}`, 14, 23);
+  doc.autoTable({
+    startY:28,
+    head:[['#','Ism','Sinf','Fan','To\'g\'ri','Jami','%','Sana']],
+    body: rows.map((r,i)=>[i+1,r.student_name,r.class_name,r.subject_name,r.score,r.total,r.percent+'%',fmtDate(r.created_at)]),
+    styles:{fontSize:8,cellPadding:3},
+    headStyles:{fillColor:[79,70,229],textColor:255},
+    alternateRowStyles:{fillColor:[238,242,255]}
+  });
+  doc.save(`UstazPro_Natijalar_${new Date().toLocaleDateString('uz-UZ').replace(/\//g,'-')}.pdf`);
+  showToast('📄','PDF yuklab olindi!','success');
 }
 
 /* ═══════════════════════════════════════════════
@@ -1881,4 +1970,10 @@ async function changeMyPassword() {
   document.getElementById(`${idPrefix}NewPassword`).value = '';
   document.getElementById(`${idPrefix}NewPasswordConfirm`).value = '';
   showToast('✅','Parol yangilandi!','success');
+
+  if (mustChangePassword) {
+    await supabaseClient.rpc('mark_password_changed');
+    mustChangePassword = false;
+    applyForcedPasswordGate();
+  }
 }

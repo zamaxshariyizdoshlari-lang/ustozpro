@@ -562,6 +562,9 @@
           <button class="btn btn-secondary btn-sm" onclick="doLogout()">↩ Chiqish</button>
         </div>
 
+        <div id="tForcedPassBanner" class="info-note" style="display:none;margin-bottom:14px">⚠️ Xavfsizlik uchun avval parolingizni almashtiring — panelning qolgan qismi shundan keyin ochiladi.</div>
+
+        <div id="tNormalContent">
         <div class="setup-card">
           <div class="setup-card-header"><div class="setup-card-icon">❓</div><div><div class="setup-card-title" id="tQFormTitle">Savol qo'shish</div><div class="setup-card-subtitle">Faqat o'zingizga biriktirilgan fan(lar)</div></div></div>
           <div class="form-row">
@@ -611,6 +614,10 @@
             <select class="form-control select" id="tFilterSubject" onchange="teacherRenderResultsTable()">
               <option value="">— Barcha fanlar —</option>
             </select>
+            <div class="export-btns">
+              <button class="btn btn-success btn-sm" onclick="teacherExportToExcel()">📥 Excel</button>
+              <button class="btn btn-danger btn-sm" onclick="teacherExportToPDF()">📄 PDF</button>
+            </div>
           </div>
           <div class="rating-table-wrap">
             <table class="rating-tbl">
@@ -619,6 +626,7 @@
             </table>
           </div>
         </div>
+        </div><!-- /tNormalContent -->
 
         <div class="section-header"><div class="section-title">Parolni almashtirish</div></div>
         <div class="setup-card">
@@ -641,6 +649,9 @@
             <button class="btn btn-secondary btn-sm" onclick="doLogout()">↩ Chiqish</button>
           </div>
 
+          <div id="stuForcedPassBanner" class="info-note" style="display:none;margin-bottom:14px">⚠️ Xavfsizlik uchun avval parolingizni almashtiring — panelning qolgan qismi shundan keyin ochiladi.</div>
+
+          <div id="stuNormalContent">
           <div class="setup-card">
             <div class="setup-card-header"><div class="setup-card-icon">📝</div><div><div class="setup-card-title">Yangi test boshlash</div><div class="setup-card-subtitle">Fanni tanlang</div></div></div>
             <div class="form-group">
@@ -691,6 +702,7 @@
               <tbody id="stuHistoryBody"></tbody>
             </table>
           </div>
+          </div><!-- /stuNormalContent -->
 
           <div class="section-header"><div class="section-title">Parolni almashtirish</div></div>
           <div class="setup-card">
@@ -743,6 +755,10 @@
     <div class="lock-desc" id="bulkCredDesc">Bu ro'yxat faqat hozir ko'rinadi — nusxalab yoki chop etib saqlang.</div>
     <div style="max-height:320px;overflow-y:auto;text-align:left;background:var(--bg3);border-radius:var(--r-sm);padding:10px;margin-bottom:14px;font-family:'DM Mono',monospace;font-size:12px" id="bulkCredList"></div>
     <button class="btn btn-secondary btn-full btn-sm" style="margin-bottom:8px" onclick="copyBulkCredList()">📋 Nusxalash</button>
+    <div class="form-row" style="margin-bottom:8px">
+      <button class="btn btn-secondary btn-sm" onclick="exportBulkCredExcel()">📥 Excel</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportBulkCredPDF()">📄 PDF</button>
+    </div>
     <button class="btn btn-primary btn-full btn-md" onclick="closeBulkCredModal()">Tushunarli</button>
   </div>
 </div>
