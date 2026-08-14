@@ -1,5 +1,7 @@
 // submit-result — javoblarni SERVERDA baholaydi, natijani bazaga yozadi,
 // va Telegram xabarnomasini yuboradi (bot tokeni faqat shu yerda, service_role orqali).
+// Chaqiruvchi kimligi (sinf/ism) sessiya tokenidan (student_accounts orqali)
+// serverda aniqlanadi, mijoz yuborgan qiymatga ishonilmaydi.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -19,19 +21,28 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const {
-      student_name, class_name, subject_name,
-      question_ids, answers, cheat_count, elapsed_seconds,
-    } = await req.json();
+    const authHeader = req.headers.get("Authorization") || "";
+    const token = authHeader.replace(/^Bearer\s+/i, "");
+    const url = Deno.env.get("SUPABASE_URL")!;
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-    if (!student_name || !class_name || !subject_name || !Array.isArray(question_ids)) {
-      return json({ error: "missing_fields" }, 400);
-    }
+    const authClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
+    const { data: { user } } = await authClient.auth.getUser(token);
+    if (!user) return json({ error: "unauthorized" }, 401);
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    );
+    const supabase = createClient(url, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", user.id).maybeSingle();
+    if (!account) return json({ error: "not_a_student" }, 403);
+
+    const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).single();
+    const { data: cls } = await supabase.from("classes").select("id, name").eq("id", student.class_id).single();
+
+    const { subject_name, question_ids, answers, cheat_count, elapsed_seconds } = await req.json();
+    if (!subject_name || !Array.isArray(question_ids)) return json({ error: "missing_fields" }, 400);
+
+    const student_name = student.full_name;
+    const class_name = cls.name;
 
     const { data: questions, error: qErr } = await supabase
       .from("questions")

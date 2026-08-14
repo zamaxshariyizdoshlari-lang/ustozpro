@@ -20,11 +20,29 @@
 <canvas id="confetti-canvas"></canvas>
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
 
-<div class="app-shell">
+<!-- ═══ LOGIN DARVOZASI — saytga kirishning yagona nuqtasi ═══ -->
+<div class="auth-gate" id="authGate">
+  <div class="admin-login-card">
+    <div class="logo-icon" style="margin:0 auto 18px;width:52px;height:52px;font-size:26px">📚</div>
+    <div class="admin-login-title">Ustoz Pro</div>
+    <div class="admin-login-sub">Davom etish uchun login va parolingizni kiriting</div>
+    <div class="form-group" style="text-align:left">
+      <label class="form-label">Login</label>
+      <input type="text" class="form-control" id="gateLoginInput" placeholder="login" onkeydown="if(event.key==='Enter')document.getElementById('gatePassInput').focus()">
+    </div>
+    <div class="form-group" style="text-align:left">
+      <label class="form-label">Parol</label>
+      <input type="password" class="form-control" id="gatePassInput" placeholder="••••••••" onkeydown="if(event.key==='Enter')gateLogin()">
+    </div>
+    <button class="btn btn-primary btn-lg btn-full" id="gateLoginBtn" onclick="gateLogin()">🔓 Kirish</button>
+  </div>
+</div>
+
+<div class="app-shell" id="appShell" style="display:none">
   <!-- SIDEBAR -->
   <nav class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <a class="logo" href="#" onclick="navigateTo('home');return false">
+      <a class="logo" href="#" onclick="return false">
         <div class="logo-icon">📚</div>
         <div>
           <div class="logo-name">Ustoz <span>Pro</span></div>
@@ -35,9 +53,9 @@
     <div class="sidebar-nav">
       <div class="nav-section-label">Asosiy</div>
       <div class="nav-item active" id="nav-home" onclick="navigateTo('home')"><span class="nav-icon">🏠</span>Bosh sahifa</div>
-      <div class="nav-item" id="nav-test" onclick="navigateTo('test-setup')"><span class="nav-icon">📝</span>Yangi test</div>
+      <div class="nav-item" id="nav-teacher" onclick="navigateTo('teacher')"><span class="nav-icon">👨‍🏫</span>Mening panelim</div>
       <div class="nav-item" id="nav-student" onclick="navigateTo('student')"><span class="nav-icon">👤</span>Mening kabinetim</div>
-      <div class="nav-section-label">Boshqaruv</div>
+      <div class="nav-section-label" id="navSectionAdmin">Boshqaruv</div>
       <div class="nav-item" id="nav-admin" onclick="navigateTo('admin')"><span class="nav-icon">🔐</span>Admin panel</div>
       <div class="nav-item" id="nav-manage" onclick="navigateTo('manage')"><span class="nav-icon">⚙️</span>Boshqarish</div>
       <div class="nav-item" id="nav-sync" onclick="navigateTo('sync')"><span class="nav-icon">🔄</span>Bazani yangilash</div>
@@ -79,8 +97,8 @@
             <h1 class="welcome-title">Zamaxshariy<br>Izdoshlari Maktabi</h1>
             <p class="welcome-sub">Professional ta'lim platformasida o'quvchilaringiz bilimini sinab ko'ring.</p>
             <div class="welcome-actions">
-              <button class="btn-white" onclick="navigateTo('test-setup')">▶ Yangi test boshlash</button>
-              <button class="btn-ghost-white" onclick="navigateTo('admin')">🔐 Admin panel</button>
+              <button class="btn-white" onclick="navigateTo('admin')">🔐 Admin panel</button>
+              <button class="btn-ghost-white" onclick="navigateTo('manage')">⚙️ Boshqarish</button>
             </div>
           </div>
         </div>
@@ -92,74 +110,13 @@
         </div>
         <div class="section-header"><div class="section-title">Tezkor harakatlar</div></div>
         <div class="quick-actions">
-          <div class="qa-card" onclick="navigateTo('test-setup')"><div class="qa-icon">📝</div><div><div class="qa-title">Yangi test boshlash</div><div class="qa-desc">O'quvchi uchun test yarating</div></div></div>
           <div class="qa-card" onclick="navigateTo('admin')"><div class="qa-icon">🏆</div><div><div class="qa-title">Reyting ko'rish</div><div class="qa-desc">1200 ballik oylik reyting</div></div></div>
           <div class="qa-card" onclick="navigateTo('manage')"><div class="qa-icon">👥</div><div><div class="qa-title">O'quvchilar</div><div class="qa-desc">Sinflar va o'quvchilarni boshqaring</div></div></div>
+          <div class="qa-card" onclick="navigateTo('manage')"><div class="qa-icon">👨‍🏫</div><div><div class="qa-title">O'qituvchilar</div><div class="qa-desc">Fan o'qituvchilarini boshqaring</div></div></div>
           <div class="qa-card" onclick="navigateTo('sync')"><div class="qa-icon">🔄</div><div><div class="qa-title">Bazani yangilash</div><div class="qa-desc">Savollarni yuklab oling</div></div></div>
         </div>
         <div class="section-header"><div class="section-title">So'nggi natijalar</div><div class="section-action" onclick="navigateTo('admin')">Hammasini ko'rish →</div></div>
         <div id="recentResultsList"><div class="empty-state">📭 Hali test natijasi yo'q. Birinchi testni boshlang!</div></div>
-      </div>
-
-      <!-- ═══ TEST SETUP ═══ -->
-      <div class="screen" id="screen-test-setup">
-        <div class="setup-card">
-          <div class="setup-card-header">
-            <div class="setup-card-icon">👤</div>
-            <div><div class="setup-card-title">O'quvchi ma'lumotlari</div><div class="setup-card-subtitle">Sinf, ism va fanni tanlang</div></div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Sinf</label>
-            <select class="form-control select" id="sClass" onchange="updateTestUI()">
-              <option value="">— Sinfni tanlang —</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">O'quvchi ismi</label>
-            <select class="form-control select" id="sName"><option value="">— Avval sinfni tanlang —</option></select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Fan</label>
-            <select class="form-control select" id="sSub"><option value="">— Avval sinfni tanlang —</option></select>
-          </div>
-
-          <!-- Sozlamalar: admin ruxsat bergan bo'lsa ko'rinadi -->
-          <div id="studentSettingsArea"></div>
-
-          <div id="adminSettingsNote" class="info-note" style="margin-bottom:14px;display:none">
-            ⚙️ <span id="adminSettingsNoteText">Savol soni va vaqtni admin belgilagan. O'zgartirishga ruxsat berilmagan.</span>
-          </div>
-
-          <div id="testSetupControls">
-            <div class="form-row" id="questionCountRow">
-              <div class="form-group">
-                <label class="form-label">Savol soni</label>
-                <select class="form-control select" id="sCount">
-                  <option value="10">10 ta savol</option>
-                  <option value="15" selected>15 ta savol</option>
-                  <option value="20">20 ta savol</option>
-                  <option value="25">25 ta savol</option>
-                  <option value="30">30 ta savol</option>
-                  <option value="40">40 ta savol</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Vaqt (daqiqa)</label>
-                <select class="form-control select" id="sTime">
-                  <option value="10">10 daqiqa</option>
-                  <option value="15">15 daqiqa</option>
-                  <option value="20" selected>20 daqiqa</option>
-                  <option value="25">25 daqiqa</option>
-                  <option value="30">30 daqiqa</option>
-                  <option value="45">45 daqiqa</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <div class="divider">tayyor</div>
-          <button class="btn btn-primary btn-lg btn-full" onclick="startTest()">▶&nbsp; Testni boshlash</button>
-        </div>
       </div>
 
       <!-- ═══ TEST IN PROGRESS ═══ -->
@@ -236,7 +193,7 @@
         <div class="answer-reveal-btn-row">
           <button class="btn btn-outline btn-md" style="flex:1" onclick="navigateTo('home')">↩ Bosh sahifaga</button>
           <button class="btn btn-warning btn-md" style="flex:1" onclick="showAnswerLockModal()">🔓 To'g'ri javoblarni ko'rish</button>
-          <button class="btn btn-primary btn-md" style="flex:1" onclick="navigateTo('test-setup')">▶ Yangi test</button>
+          <button class="btn btn-primary btn-md" style="flex:1" onclick="navigateTo('student')">▶ Yangi test</button>
         </div>
 
         <div class="setup-card" id="reviewSection">
@@ -259,32 +216,13 @@
 
       <!-- ═══ ADMIN PANEL ═══ -->
       <div class="screen" id="screen-admin">
-        <!-- Login -->
-        <div id="adminLoginSection">
-          <div class="admin-login-card">
-            <span class="admin-icon">🔐</span>
-            <div class="admin-login-title">Admin Panelga Kirish</div>
-            <div class="admin-login-sub">Faqat o'qituvchi uchun. Login va parolni kiriting.</div>
-            <div class="form-group" style="text-align:left">
-              <label class="form-label">Login</label>
-              <input type="text" class="form-control" id="adminLoginInput" placeholder="admin" onkeydown="if(event.key==='Enter')adminLogin()">
-            </div>
-            <div class="form-group" style="text-align:left">
-              <label class="form-label">Parol</label>
-              <input type="password" class="form-control" id="adminPassInput" placeholder="••••••••" onkeydown="if(event.key==='Enter')adminLogin()">
-            </div>
-            <button class="btn btn-primary btn-lg btn-full" onclick="adminLogin()">🔐 Kirish</button>
-          </div>
-        </div>
-
-        <!-- Dashboard (faqat login bo'lganda ko'rinadi) -->
-        <div id="adminDashboard" style="display:none">
+        <div id="adminDashboard">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
             <div>
-              <div class="section-title" style="font-size:20px" id="adminPanelTitle">🔐 Admin Panel</div>
-              <div style="font-size:12px;color:var(--text-dim);margin-top:2px" id="adminPanelSubtitle">O'qituvchi: Zamaxshariy Izdoshlari Maktabi</div>
+              <div class="section-title" style="font-size:20px">🔐 Admin Panel</div>
+              <div style="font-size:12px;color:var(--text-dim);margin-top:2px">O'qituvchi: Zamaxshariy Izdoshlari Maktabi</div>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="adminLogout()">↩ Chiqish</button>
+            <button class="btn btn-secondary btn-sm" onclick="doLogout()">↩ Chiqish</button>
           </div>
 
           <div class="admin-tabs">
@@ -419,13 +357,6 @@
 
       <!-- ═══ MANAGE ═══ -->
       <div class="screen" id="screen-manage">
-        <div id="manageLoginGate" class="setup-card" style="display:none;text-align:center">
-          <span class="admin-icon">🔐</span>
-          <div class="admin-login-title">Admin sifatida kiring</div>
-          <div class="admin-login-sub">Sinf, o'quvchi, fan va savollarni boshqarish uchun admin panelga kiring.</div>
-          <button class="btn btn-primary btn-md" onclick="navigateTo('admin')">🔐 Admin panelga o'tish</button>
-        </div>
-        <div id="manageContent">
         <div class="manage-tabs">
           <button class="mtab active" id="mtab-classes" onclick="switchMTab('classes')">🏫 Sinflar</button>
           <button class="mtab" id="mtab-students" onclick="switchMTab('students')">👥 O'quvchilar</button>
@@ -455,6 +386,7 @@
               <div class="form-group"><label class="form-label">O'quvchi ismi</label><input type="text" class="form-control" id="newStudentName" placeholder="Ism Familiya" onkeydown="if(event.key==='Enter')addStudent()"></div>
               <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-md btn-full" id="addStudentBtn" onclick="addStudent()">+ Qo'shish</button></div>
             </div>
+            <button class="btn btn-success btn-md btn-full" style="margin-top:8px" onclick="bulkCreateStudentLogins()">🔑 Login yo'q o'quvchilar uchun barchasiga login yaratish</button>
             <div class="sec-head"><h4>O'quvchilar ro'yxati</h4><span class="badge" id="studentCount">0</span></div>
             <div class="form-group"><input type="text" class="form-control" id="studentSearchInput" placeholder="🔍 Ism bo'yicha qidirish..." oninput="renderStudentList()"></div>
             <div id="studentList"></div>
@@ -534,7 +466,6 @@
             <div id="teacherList"></div>
           </div>
         </div>
-        </div><!-- /manageContent -->
       </div>
 
       <!-- ═══ SYNC ═══ -->
@@ -562,36 +493,131 @@
         </div>
       </div>
 
-      <!-- ═══ STUDENT CABINET ═══ -->
-      <div class="screen" id="screen-student">
-        <div class="setup-card" id="studentLoginCard">
-          <div class="setup-card-header">
-            <div class="setup-card-icon">👤</div>
-            <div><div class="setup-card-title">Mening kabinetim</div><div class="setup-card-subtitle">Sinf, ism va shaxsiy PIN-kodni kiriting</div></div>
+      <!-- ═══ TEACHER PANEL — admin ekranlaridan mustaqil, faqat o'z faniga cheklangan ═══ -->
+      <div class="screen" id="screen-teacher">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
+          <div>
+            <div class="section-title" style="font-size:20px">👨‍🏫 <span id="tPanelName">—</span></div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:2px">Fan: <span id="tPanelSubjects">—</span></div>
           </div>
-          <div class="form-group">
-            <label class="form-label">Sinf</label>
-            <select class="form-control select" id="stuClass" onchange="updateStudentLoginUI()"><option value="">— Sinfni tanlang —</option></select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Ismingiz</label>
-            <select class="form-control select" id="stuName"><option value="">— Avval sinfni tanlang —</option></select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">PIN-kod</label>
-            <input type="password" inputmode="numeric" maxlength="4" class="form-control" id="stuPin" placeholder="••••" onkeydown="if(event.key==='Enter')studentLogin()">
-          </div>
-          <div class="info-note" style="margin-bottom:14px">💡 PIN-kodingiz yo'q yoki unutgan bo'lsangiz, o'qituvchidan so'rang.</div>
-          <button class="btn btn-primary btn-lg btn-full" id="stuLoginBtn" onclick="studentLogin()">🔓 Kirish</button>
+          <button class="btn btn-secondary btn-sm" onclick="doLogout()">↩ Chiqish</button>
         </div>
 
-        <div id="studentPanelContent" style="display:none">
+        <div class="setup-card">
+          <div class="setup-card-header"><div class="setup-card-icon">❓</div><div><div class="setup-card-title" id="tQFormTitle">Savol qo'shish</div><div class="setup-card-subtitle">Faqat o'zingizga biriktirilgan fan(lar)</div></div></div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Sinf</label><select class="form-control select" id="tQClass" onchange="teacherOnQClassChange()"><option value="">— Sinfni tanlang —</option></select></div>
+            <div class="form-group"><label class="form-label">Fan</label><select class="form-control select" id="tQSubject" onchange="teacherRenderQuestionList()"><option value="">— Avval sinfni tanlang —</option></select></div>
+          </div>
+          <div class="form-group"><label class="form-label">Savol matni</label><input type="text" class="form-control" id="tNewQText" placeholder="Savol matnini kiriting"></div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">A varianti</label><input type="text" class="form-control" id="tNewQA" placeholder="A"></div>
+            <div class="form-group"><label class="form-label">B varianti</label><input type="text" class="form-control" id="tNewQB" placeholder="B"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">C varianti</label><input type="text" class="form-control" id="tNewQC" placeholder="C"></div>
+            <div class="form-group"><label class="form-label">D varianti</label><input type="text" class="form-control" id="tNewQD" placeholder="D"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">To'g'ri javob</label>
+              <select class="form-control select" id="tNewQCorrect">
+                <option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option>
+              </select>
+            </div>
+            <div class="form-group"><label class="form-label">Izoh (ixtiyoriy)</label><input type="text" class="form-control" id="tNewQHint" placeholder="Yordamchi izoh"></div>
+          </div>
+          <div class="form-row">
+            <button class="btn btn-primary btn-md btn-full" id="tQSaveBtn" onclick="teacherSaveQuestion()">+ Savol qo'shish</button>
+            <button class="btn btn-secondary btn-md" id="tQCancelEditBtn" style="display:none" onclick="teacherCancelEditQuestion()">✕ Bekor qilish</button>
+          </div>
+
+          <div class="divider">ommaviy qo'shish</div>
+          <div class="info-note" style="margin-bottom:10px">💡 Har bir savolni alohida qatorga yozing: <b>Savol | A | B | C | D | To'g'ri(a/b/c/d) | Izoh</b>. C, D va izoh ixtiyoriy.</div>
+          <textarea class="form-control" id="tBulkQText" rows="5" placeholder="Masalan:&#10;Poytaxtimiz qaysi shahar? | Toshkent | Samarqand | Buxoro | Andijon | a | &#10;2+2 nechaga teng? | 3 | 4 | 5 | 6 | b | Oddiy qo'shish"></textarea>
+          <button class="btn btn-success btn-md btn-full" style="margin-top:10px" id="tBulkQBtn" onclick="teacherBulkAddQuestions()">📥 Ommaviy qo'shish</button>
+          <div id="tBulkQStatusBox" style="margin-top:10px;display:none"></div>
+
+          <div class="sec-head"><h4>Savollar ro'yxati</h4><span class="badge" id="tQuestionCount">0</span></div>
+          <div class="form-group"><input type="text" class="form-control" id="tQSearchInput" placeholder="🔍 Savol matni bo'yicha qidirish..." oninput="teacherRenderFilteredQuestions()"></div>
+          <div id="tQuestionListArea"></div>
+        </div>
+
+        <div class="section-header"><div class="section-title">Mening natijalarim</div></div>
+        <div class="setup-card">
+          <div class="filter-row">
+            <select class="form-control select" id="tFilterClass" onchange="teacherRenderResultsTable()">
+              <option value="">— Barcha sinflar —</option>
+            </select>
+            <select class="form-control select" id="tFilterSubject" onchange="teacherRenderResultsTable()">
+              <option value="">— Barcha fanlar —</option>
+            </select>
+          </div>
+          <div class="rating-table-wrap">
+            <table class="rating-tbl">
+              <thead><tr><th>#</th><th>Ism</th><th>Sinf</th><th>Fan</th><th>To'g'ri</th><th>%</th><th>Sana</th><th></th></tr></thead>
+              <tbody id="tResultsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-header"><div class="section-title">Parolni almashtirish</div></div>
+        <div class="setup-card">
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Yangi parol</label><input type="password" class="form-control" id="tNewPassword" placeholder="Kamida 6 belgi"></div>
+            <div class="form-group"><label class="form-label">Yangi parol (takror)</label><input type="password" class="form-control" id="tNewPasswordConfirm" placeholder="Kamida 6 belgi"></div>
+          </div>
+          <button class="btn btn-primary btn-md" onclick="changeMyPassword()">💾 Yangilash</button>
+        </div>
+      </div>
+
+      <!-- ═══ STUDENT CABINET ═══ -->
+      <div class="screen" id="screen-student">
+        <div id="studentPanelContent">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
             <div>
               <div class="section-title" style="font-size:20px">👤 <span id="stuPanelName">—</span></div>
               <div style="font-size:12px;color:var(--text-dim);margin-top:2px"><span id="stuPanelClass">—</span></div>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="studentLogout()">↩ Chiqish</button>
+            <button class="btn btn-secondary btn-sm" onclick="doLogout()">↩ Chiqish</button>
+          </div>
+
+          <div class="setup-card">
+            <div class="setup-card-header"><div class="setup-card-icon">📝</div><div><div class="setup-card-title">Yangi test boshlash</div><div class="setup-card-subtitle">Fanni tanlang</div></div></div>
+            <div class="form-group">
+              <label class="form-label">Fan</label>
+              <select class="form-control select" id="stuTestSubject"><option value="">— Fanni tanlang —</option></select>
+            </div>
+            <div id="stuAdminSettingsNote" class="info-note" style="margin-bottom:14px;display:none">
+              ⚙️ <span id="stuAdminSettingsNoteText">Savol soni va vaqtni admin belgilagan.</span>
+            </div>
+            <div id="stuTestSetupControls">
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">Savol soni</label>
+                  <select class="form-control select" id="stuCount">
+                    <option value="10">10 ta savol</option>
+                    <option value="15" selected>15 ta savol</option>
+                    <option value="20">20 ta savol</option>
+                    <option value="25">25 ta savol</option>
+                    <option value="30">30 ta savol</option>
+                    <option value="40">40 ta savol</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Vaqt (daqiqa)</label>
+                  <select class="form-control select" id="stuTime">
+                    <option value="10">10 daqiqa</option>
+                    <option value="15">15 daqiqa</option>
+                    <option value="20" selected>20 daqiqa</option>
+                    <option value="25">25 daqiqa</option>
+                    <option value="30">30 daqiqa</option>
+                    <option value="45">45 daqiqa</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-primary btn-lg btn-full" onclick="startTest()">▶&nbsp; Testni boshlash</button>
           </div>
 
           <div class="stats-grid" id="stuRatingCards"></div>
@@ -607,13 +633,13 @@
             </table>
           </div>
 
-          <div class="setup-card" style="margin-top:20px">
-            <div class="setup-card-header"><div class="setup-card-icon">🔑</div><div><div class="setup-card-title">PIN-kodni almashtirish</div></div></div>
+          <div class="section-header"><div class="section-title">Parolni almashtirish</div></div>
+          <div class="setup-card">
             <div class="form-row">
-              <div class="form-group"><label class="form-label">Eski PIN</label><input type="password" inputmode="numeric" maxlength="4" class="form-control" id="stuOldPin" placeholder="••••"></div>
-              <div class="form-group"><label class="form-label">Yangi PIN</label><input type="password" inputmode="numeric" maxlength="4" class="form-control" id="stuNewPin" placeholder="••••"></div>
+              <div class="form-group"><label class="form-label">Yangi parol</label><input type="password" class="form-control" id="stuNewPassword" placeholder="Kamida 6 belgi"></div>
+              <div class="form-group"><label class="form-label">Yangi parol (takror)</label><input type="password" class="form-control" id="stuNewPasswordConfirm" placeholder="Kamida 6 belgi"></div>
             </div>
-            <button class="btn btn-primary btn-md" id="stuChangePinBtn" onclick="changeStudentPin()">💾 Yangilash</button>
+            <button class="btn btn-primary btn-md" onclick="changeMyPassword()">💾 Yangilash</button>
           </div>
         </div>
       </div>
@@ -634,14 +660,31 @@
   </div>
 </div>
 
-<!-- PIN NATIJASI MODAL -->
-<div class="lock-modal-overlay hidden" id="pinResultOverlay">
+<!-- LOGIN-PAROL NATIJASI MODAL (bitta o'quvchi/o'qituvchi uchun) -->
+<div class="lock-modal-overlay hidden" id="credResultOverlay">
   <div class="lock-modal">
     <span class="lock-icon">🔑</span>
-    <div class="lock-title">Yangi PIN yaratildi</div>
-    <div class="lock-desc" id="pinResultDesc">O'quvchiga shu PIN-kodni bering:</div>
-    <div class="lock-input" id="pinResultValue" style="display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;letter-spacing:0.3em">0000</div>
-    <button class="btn btn-primary btn-full btn-md" onclick="closePinResultModal()">Tushunarli</button>
+    <div class="lock-title" id="credResultTitle">Yangi login yaratildi</div>
+    <div class="lock-desc" id="credResultDesc">Bu ma'lumot faqat hozir ko'rinadi:</div>
+    <div style="text-align:left;background:var(--bg3);border-radius:var(--r-sm);padding:14px;margin-bottom:14px">
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">LOGIN</div>
+      <div id="credResultLogin" style="font-family:'DM Mono',monospace;font-size:16px;font-weight:700;margin-bottom:10px">—</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">PAROL</div>
+      <div id="credResultPassword" style="font-family:'DM Mono',monospace;font-size:16px;font-weight:700">—</div>
+    </div>
+    <button class="btn btn-primary btn-full btn-md" onclick="closeCredResultModal()">Tushunarli</button>
+  </div>
+</div>
+
+<!-- LOGIN-PAROL RO'YXATI MODAL (barcha o'quvchilar uchun bir yo'la) -->
+<div class="lock-modal-overlay hidden" id="bulkCredOverlay">
+  <div class="lock-modal" style="max-width:560px;width:92vw">
+    <span class="lock-icon">🔑</span>
+    <div class="lock-title">Login-parollar yaratildi</div>
+    <div class="lock-desc" id="bulkCredDesc">Bu ro'yxat faqat hozir ko'rinadi — nusxalab yoki chop etib saqlang.</div>
+    <div style="max-height:320px;overflow-y:auto;text-align:left;background:var(--bg3);border-radius:var(--r-sm);padding:10px;margin-bottom:14px;font-family:'DM Mono',monospace;font-size:12px" id="bulkCredList"></div>
+    <button class="btn btn-secondary btn-full btn-sm" style="margin-bottom:8px" onclick="copyBulkCredList()">📋 Nusxalash</button>
+    <button class="btn btn-primary btn-full btn-md" onclick="closeBulkCredModal()">Tushunarli</button>
   </div>
 </div>
 

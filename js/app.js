@@ -3,12 +3,16 @@
 ═══════════════════════════════════════════════ */
 const supabaseClient = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 
+// get-test/submit-result endi chaqiruvchining HAQIQIY sessiya tokenini talab qiladi
+// (mijoz aytgan ism-sinfga emas, shu token orqali aniqlangan hisobga ishonadi).
 async function callEdgeFunction(name, body) {
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  const token = session?.access_token || CONFIG.SUPABASE_ANON_KEY;
   const res = await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/${name}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`,
+      'Authorization': `Bearer ${token}`,
       'apikey': CONFIG.SUPABASE_ANON_KEY
     },
     body: JSON.stringify(body)
@@ -32,12 +36,19 @@ let adminLoggedIn = false;
 let teacherLoggedIn = false;
 let teacherSubjects = []; // faqat shu o'qituvchiga biriktirilgan fan nomlari
 let teacherName = '';
+let studentLoggedIn = false;
+let studentInfo = null; // {student_id, full_name, class_name, login}
 let classesCache = [];   // [{id,name}]
 let allStudents  = [];   // [{id,class_id,full_name}]
 let allSubjects  = [];   // [{id,class_id,name}]
 let adminResults = [];   // [{id,student_name,class_name,subject_name,score,total,percent,cheat_count,elapsed_seconds,created_at}]
 let allQuestions = [];   // questions currently shown in the "Savollar" manage tab
 let editingQuestionId = null; // savol tahrirlash rejimida bo'lsa, tahrirlanayotgan savol id'si
+let teacherQuestions = [];    // o'qituvchi paneli - joriy fan savollari
+let editingTeacherQuestionId = null;
+let teacherQuestionSaveBusy = false;
+let teacherBulkAddBusy = false;
+let teacherResults = [];      // o'qituvchiga RLS orqali ko'rinadigan (faqat o'z fani) natijalar
 let questionSaveBusy = false;
 let classAddBusy = false;
 let studentAddBusy = false;
@@ -82,29 +93,40 @@ async function refreshAdminResults() {
   const { data } = await supabaseClient.from('results').select('*').order('created_at', { ascending: false });
   adminResults = data || [];
 }
+// O'qituvchi natijalari — RLS (is_teacher_for_subject) so'rovni avtomatik o'z faniga cheklaydi
+async function refreshTeacherResults() {
+  const { data } = await supabaseClient.from('results').select('*').order('created_at', { ascending: false });
+  teacherResults = data || [];
+}
 async function loadSettings() {
   const { data } = await supabaseClient.from('settings').select('*').eq('id', 1).single();
   if (data) settings = data;
 }
 
 /* ═══════════════════════════════════════════════
-   INIT
+   INIT — sayt LOGIN DARVOZASI bilan boshlanadi.
+   Jadvallarni o'qish endi faqat autentifikatsiyadan keyin ishlaydi (RLS shuni talab qiladi),
+   shuning uchun bu yerda hech narsa oldindan yuklanmaydi.
 ═══════════════════════════════════════════════ */
 async function init() {
-  await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects(), loadSettings()]);
-  populateClassSelects();
-  renderClassList();
-  applySettingsToTestSetup();
-
   const { data: { session } } = await supabaseClient.auth.getSession();
-  if (session) { await resolveCurrentRole(); }
-  applyAdminGates();
-
-  await updateDashboardStats();
-  renderRecentResults();
-  checkForResumeSession();
+  if (session) {
+    const role = await resolveCurrentRole();
+    if (!role) showAuthGate();
+  } else {
+    showAuthGate();
+  }
 }
 init();
+
+function showAuthGate() {
+  document.getElementById('authGate').style.display = 'flex';
+  document.getElementById('appShell').style.display = 'none';
+}
+function hideAuthGate() {
+  document.getElementById('authGate').style.display = 'none';
+  document.getElementById('appShell').style.display = 'flex';
+}
 
 function saveSettings() {
   const updated = {
@@ -122,9 +144,9 @@ function saveSettings() {
 }
 function applySettingsToTestSetup() {
   const allowed = settings.allow_custom;
-  const controls = document.getElementById('testSetupControls');
-  const note = document.getElementById('adminSettingsNote');
-  const noteText = document.getElementById('adminSettingsNoteText');
+  const controls = document.getElementById('stuTestSetupControls');
+  const note = document.getElementById('stuAdminSettingsNote');
+  const noteText = document.getElementById('stuAdminSettingsNoteText');
   if (controls) controls.style.display = allowed ? '' : 'none';
   if (note) {
     note.style.display = allowed ? 'none' : 'flex';
@@ -136,14 +158,14 @@ function applySettingsToTestSetup() {
    NAVIGATION
 ═══════════════════════════════════════════════ */
 const SCREENS = {
-  'home':       { screen:'screen-home',       nav:'nav-home',   title:'Bosh sahifa',      bc:'Bosh sahifa' },
-  'test-setup': { screen:'screen-test-setup', nav:'nav-test',   title:'Yangi test',       bc:'Yangi test boshlash' },
-  'test':       { screen:'screen-test',       nav:'nav-test',   title:'Test topshirish',  bc:'Jarayonda...' },
-  'result':     { screen:'screen-result',     nav:'nav-test',   title:'Natijalar',        bc:'Test natijalari' },
-  'admin':      { screen:'screen-admin',      nav:'nav-admin',  title:'Admin Panel',      bc:'Admin boshqaruvi' },
-  'manage':     { screen:'screen-manage',     nav:'nav-manage', title:'Boshqarish',       bc:'Sinflar va o\'quvchilar' },
-  'sync':       { screen:'screen-sync',       nav:'nav-sync',   title:'Bazani yangilash', bc:'Google Sheets import' },
-  'student':    { screen:'screen-student',    nav:'nav-student',title:'Mening kabinetim', bc:'O\'quvchi kabineti' }
+  'home':       { screen:'screen-home',       nav:'nav-home',    title:'Bosh sahifa',      bc:'Bosh sahifa' },
+  'test':       { screen:'screen-test',       nav:'nav-student', title:'Test topshirish',  bc:'Jarayonda...' },
+  'result':     { screen:'screen-result',     nav:'nav-student', title:'Natijalar',        bc:'Test natijalari' },
+  'admin':      { screen:'screen-admin',      nav:'nav-admin',   title:'Admin Panel',      bc:'Admin boshqaruvi' },
+  'manage':     { screen:'screen-manage',     nav:'nav-manage',  title:'Boshqarish',       bc:'Sinflar va o\'quvchilar' },
+  'sync':       { screen:'screen-sync',       nav:'nav-sync',    title:'Bazani yangilash', bc:'Google Sheets import' },
+  'teacher':    { screen:'screen-teacher',    nav:'nav-teacher', title:'Mening panelim',   bc:'O\'qituvchi paneli' },
+  'student':    { screen:'screen-student',    nav:'nav-student', title:'Mening kabinetim', bc:'O\'quvchi kabineti' }
 };
 function navigateTo(page) {
   const cfg = SCREENS[page]; if (!cfg) return;
@@ -153,12 +175,19 @@ function navigateTo(page) {
   document.getElementById(cfg.nav)?.classList.add('active');
   document.getElementById('topbarTitle').innerText = cfg.title;
   document.getElementById('topbarBreadcrumb').innerHTML = `<span>Ustoz Pro</span> › <span>${cfg.bc}</span>`;
-  if (page==='manage') { applyAdminGates(); if (adminLoggedIn) syncManageSelects(); }
-  if (page==='sync') applyAdminGates();
+  if (page==='manage' && adminLoggedIn) syncManageSelects();
   if (page==='home') { updateDashboardStats(); renderRecentResults(); }
   if (page==='admin' && adminLoggedIn) { populateAdminFilters(); refreshAdminResults().then(()=>{renderResultsTable(); renderRatingPanel();}); }
-  if (page==='student') initStudentScreen();
+  if (page==='teacher' && teacherLoggedIn) { refreshTeacherResults().then(()=>teacherRenderResultsTable()); }
+  if (page==='student' && studentLoggedIn) loadStudentPanel();
   closeSidebar(); window.scrollTo({top:0,behavior:'smooth'});
+}
+// Sidebar navigatsiyasini rolga qarab ko'rsatadi — har bir rol faqat o'z bo'limini ko'radi
+function applyRoleNav(role) {
+  const adminOnly = ['nav-home','nav-manage','nav-sync','nav-admin','navSectionAdmin'];
+  adminOnly.forEach(id=>{ const el=document.getElementById(id); if (el) el.style.display = role==='admin' ? '' : 'none'; });
+  const teacherEl = document.getElementById('nav-teacher'); if (teacherEl) teacherEl.style.display = role==='teacher' ? '' : 'none';
+  const studentEl = document.getElementById('nav-student'); if (studentEl) studentEl.style.display = role==='student' ? '' : 'none';
 }
 
 /* ═══════════════════════════════════════════════
@@ -215,112 +244,114 @@ function closeTypeConfirm() {
 }
 
 /* ═══════════════════════════════════════════════
-   ADMIN AUTH (Supabase Auth)
+   LOGIN DARVOZASI (Supabase Auth) — admin/o'qituvchi/o'quvchi
+   uchun yagona kirish nuqtasi. Login email shaklida bo'lishi
+   shart emas — "@" bo'lmasa avtomatik "@ustozpro.local" qo'shiladi
+   (admin uchun ADMIN_LOGIN_HINT alohida moslashtiriladi).
 ═══════════════════════════════════════════════ */
-async function adminLogin() {
-  const loginRaw = document.getElementById('adminLoginInput').value.trim();
-  const pass = document.getElementById('adminPassInput').value;
-  const email = (!loginRaw || loginRaw === CONFIG.ADMIN_LOGIN_HINT || !loginRaw.includes('@')) ? CONFIG.ADMIN_EMAIL : loginRaw;
+async function gateLogin() {
+  const loginRaw = document.getElementById('gateLoginInput').value.trim();
+  const pass = document.getElementById('gatePassInput').value;
+  if (!loginRaw || !pass) { showToast('⚠️','Login va parolni kiriting!','warning'); return; }
 
+  let email;
+  if (loginRaw.includes('@')) email = loginRaw;
+  else if (loginRaw === CONFIG.ADMIN_LOGIN_HINT) email = CONFIG.ADMIN_EMAIL;
+  else email = `${loginRaw}@ustozpro.local`;
+
+  const btn = document.getElementById('gateLoginBtn'); if (btn) btn.disabled = true;
   const { error } = await supabaseClient.auth.signInWithPassword({ email, password: pass });
+  if (btn) btn.disabled = false;
   if (error) {
-    document.getElementById('adminPassInput').style.borderColor='var(--danger)';
+    document.getElementById('gatePassInput').style.borderColor='var(--danger)';
     showToast('❌','Login yoki parol noto\'g\'ri!','error');
-    setTimeout(()=>document.getElementById('adminPassInput').style.borderColor='',1500);
+    setTimeout(()=>document.getElementById('gatePassInput').style.borderColor='',1500);
     return;
   }
   const role = await resolveCurrentRole();
-  if (role==='admin') showToast('✅','Admin paneliga xush kelibsiz!','success','O\'qituvchi rejimida');
-  else if (role==='teacher') showToast('✅',`Xush kelibsiz, ${teacherName}!`,'success',teacherSubjects.join(', '));
-  else showToast('❌','Bu hisob tizimda tanilmadi','error');
+  if (!role) { showToast('❌','Bu hisob tizimda tanilmadi','error'); return; }
+  document.getElementById('gateLoginInput').value='';
+  document.getElementById('gatePassInput').value='';
+  const label = role==='admin'?'Admin':role==='teacher'?teacherName:studentInfo.full_name;
+  showToast('✅',`Xush kelibsiz, ${label}!`,'success');
 }
-// Muvaffaqiyatli Supabase Auth kirishdan keyin (yoki sahifa qayta yuklanganda) "men kimman"ni
-// aniqlaydi: haqiqiy admin, fan o'qituvchisi, yoki hech biri (unda chiqarib yuboriladi).
+// Muvaffaqiyatli kirishdan keyin (yoki sahifa qayta yuklanganda) "men kimman"ni aniqlaydi:
+// admin, o'qituvchi, o'quvchi — yoki hech biri (unda chiqarib yuboriladi).
 async function resolveCurrentRole() {
   const { data: isAdminRes } = await supabaseClient.rpc('is_admin');
   if (isAdminRes) {
-    adminLoggedIn = true; teacherLoggedIn = false; teacherSubjects = []; teacherName = '';
-    await showAdminDashboard();
+    adminLoggedIn = true; teacherLoggedIn = false; studentLoggedIn = false;
+    teacherSubjects = []; teacherName = ''; studentInfo = null;
+    await enterAdminMode();
     return 'admin';
   }
   const { data: teacherRows } = await supabaseClient.rpc('get_my_teacher_info');
-  const info = teacherRows && teacherRows[0];
-  if (info && info.full_name) {
-    adminLoggedIn = false; teacherLoggedIn = true; teacherSubjects = info.subject_names || []; teacherName = info.full_name;
-    await showAdminDashboard();
+  const tInfo = teacherRows && teacherRows[0];
+  if (tInfo && tInfo.full_name) {
+    adminLoggedIn = false; teacherLoggedIn = true; studentLoggedIn = false;
+    teacherSubjects = tInfo.subject_names || []; teacherName = tInfo.full_name; studentInfo = null;
+    await enterTeacherMode();
     return 'teacher';
   }
+  const { data: studentRows } = await supabaseClient.rpc('get_my_student_info');
+  const sInfo = studentRows && studentRows[0];
+  if (sInfo && sInfo.full_name) {
+    adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = true;
+    teacherSubjects = []; teacherName = ''; studentInfo = sInfo;
+    await enterStudentMode();
+    return 'student';
+  }
   await supabaseClient.auth.signOut();
-  adminLoggedIn = false; teacherLoggedIn = false; teacherSubjects = []; teacherName = '';
+  adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
+  teacherSubjects = []; teacherName = ''; studentInfo = null;
   return null;
 }
-async function adminLogout() {
+async function doLogout() {
   await supabaseClient.auth.signOut();
-  adminLoggedIn = false;
-  teacherLoggedIn = false; teacherSubjects = []; teacherName = '';
-  document.getElementById('adminLoginSection').style.display = 'block';
-  document.getElementById('adminDashboard').style.display   = 'none';
-  document.getElementById('adminLoginInput').value = '';
-  document.getElementById('adminPassInput').value  = '';
+  adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
+  teacherSubjects = []; teacherName = ''; studentInfo = null;
   document.getElementById('sidebarUserName').textContent = 'Foydalanuvchi';
   document.getElementById('sidebarUserRole').textContent = 'O\'quvchi';
-  applyAdminGates();
-  showToast('👋','Paneldan chiqdingiz','info');
+  showAuthGate();
+  showToast('👋','Tizimdan chiqdingiz','info');
 }
-async function showAdminDashboard() {
-  document.getElementById('adminLoginSection').style.display = 'none';
-  document.getElementById('adminDashboard').style.display   = 'block';
-  if (teacherLoggedIn) {
-    document.getElementById('sidebarUserName').textContent = teacherName;
-    document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
-    document.getElementById('adminPanelTitle').innerText = '👨‍🏫 O\'qituvchi paneli';
-    document.getElementById('adminPanelSubtitle').innerText = `Fan: ${teacherSubjects.join(', ')||'—'}`;
-  } else {
-    document.getElementById('sidebarUserName').textContent = 'Admin';
-    document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
-    document.getElementById('adminPanelTitle').innerText = '🔐 Admin Panel';
-    document.getElementById('adminPanelSubtitle').innerText = 'O\'qituvchi: Zamaxshariy Izdoshlari Maktabi';
-  }
-  applyAdminGates();
-  applyAdminPanelRoleUI();
-  applyManageRoleUI();
-  populateAdminFilters();
-  await refreshAdminResults();
-  renderResultsTable();
-  if (adminLoggedIn) renderRatingPanel();
-  loadSettingsUI();
+async function enterAdminMode() {
+  hideAuthGate();
+  applyRoleNav('admin');
+  document.getElementById('sidebarUserName').textContent = 'Admin';
+  document.getElementById('sidebarUserRole').textContent = 'Administrator';
+  await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects(), loadSettings()]);
+  populateClassSelects();
+  renderClassList();
+  applySettingsToTestSetup();
+  await updateDashboardStats();
+  renderRecentResults();
+  navigateTo('home');
 }
-function applyAdminGates() {
-  const loggedIn = adminLoggedIn || teacherLoggedIn;
-  const manageGate = document.getElementById('manageLoginGate');
-  const manageContent = document.getElementById('manageContent');
-  const syncGate = document.getElementById('syncLoginGate');
-  const syncContent = document.getElementById('syncContent');
-  if (manageGate) manageGate.style.display = loggedIn ? 'none' : 'block';
-  if (manageContent) manageContent.style.display = loggedIn ? 'block' : 'none';
-  // Google Sheets ommaviy import — faqat admin (o'qituvchi uchun emas)
-  if (syncGate) syncGate.style.display = adminLoggedIn ? 'none' : 'block';
-  if (syncContent) syncContent.style.display = adminLoggedIn ? 'block' : 'none';
-  if (loggedIn) applyManageRoleUI();
+async function enterTeacherMode() {
+  hideAuthGate();
+  applyRoleNav('teacher');
+  document.getElementById('sidebarUserName').textContent = teacherName;
+  document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
+  await Promise.all([refreshClasses(), refreshAllSubjects()]);
+  document.getElementById('tPanelName').innerText = teacherName;
+  document.getElementById('tPanelSubjects').innerText = teacherSubjects.join(', ') || '—';
+  populateClassSelects();
+  teacherPopulateFilters();
+  navigateTo('teacher');
 }
-// Boshqarish ekranida o'qituvchi uchun faqat "Savollar" tabini qoldiradi
-// (Sinflar/O'quvchilar/Fanlar/O'qituvchilar — admin-only roster boshqaruvi)
-function applyManageRoleUI() {
-  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
-  ['mtab-classes','mtab-students','mtab-subjects','mtab-teachers'].forEach(id=>{
-    const el = document.getElementById(id); if (el) el.style.display = teacherOnly ? 'none' : '';
-  });
-  if (teacherOnly) switchMTab('questions');
-}
-// Admin panelida o'qituvchi uchun faqat "Natijalar" tabini (o'z faniga cheklangan) qoldiradi
-function applyAdminPanelRoleUI() {
-  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
-  ['atab-rating','atab-settings'].forEach(id=>{
-    const el = document.getElementById(id); if (el) el.style.display = teacherOnly ? 'none' : '';
-  });
-  const clearBtn = document.getElementById('clearResultsBtn');
-  if (clearBtn) clearBtn.style.display = teacherOnly ? 'none' : '';
-  if (teacherOnly) switchATab('results');
+async function enterStudentMode() {
+  hideAuthGate();
+  applyRoleNav('student');
+  document.getElementById('sidebarUserName').textContent = studentInfo.full_name;
+  document.getElementById('sidebarUserRole').textContent = 'O\'quvchi';
+  await Promise.all([refreshClasses(), refreshAllSubjects(), loadSettings()]);
+  document.getElementById('stuPanelName').innerText = studentInfo.full_name;
+  document.getElementById('stuPanelClass').innerText = `🏫 ${studentInfo.class_name}`;
+  populateStudentTestSubjectSelect();
+  applySettingsToTestSetup();
+  navigateTo('student');
+  checkForResumeSession();
 }
 function loadSettingsUI() {
   document.getElementById('settingMaxAttempts').value          = settings.max_attempts;
@@ -347,8 +378,7 @@ function switchATab(tab) {
 ═══════════════════════════════════════════════ */
 function populateAdminFilters() {
   const classes = classesCache.map(c=>c.name);
-  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
-  const allSubs = teacherOnly ? new Set(teacherSubjects) : new Set(allSubjects.map(s=>s.name));
+  const allSubs = new Set(allSubjects.map(s=>s.name));
 
   ['filterClass','ratingFilterClass'].forEach(id=>{
     const el = document.getElementById(id); if (!el) return;
@@ -360,6 +390,14 @@ function populateAdminFilters() {
     el.innerHTML = '<option value="">— Barcha fanlar —</option>';
     [...allSubs].sort().forEach(s=>el.innerHTML+=`<option value="${s}">${s}</option>`);
   });
+}
+// O'qituvchi natijalar filtri — faqat o'ziga biriktirilgan fan(lar)
+function teacherPopulateFilters() {
+  const classes = classesCache.map(c=>c.name);
+  const el1 = document.getElementById('tFilterClass');
+  if (el1) { el1.innerHTML = '<option value="">— Barcha sinflar —</option>'; classes.forEach(c=>el1.innerHTML+=`<option value="${c}">${c}</option>`); }
+  const el2 = document.getElementById('tFilterSubject');
+  if (el2) { el2.innerHTML = '<option value="">— Barcha fanlar —</option>'; teacherSubjects.forEach(s=>el2.innerHTML+=`<option value="${esc(s)}">${esc(s)}</option>`); }
 }
 
 /* ═══════════════════════════════════════════════
@@ -530,14 +568,17 @@ async function clearAllResults() {
 
 /* ═══════════════════════════════════════════════
    SESSION PERSISTENCE (resume an unfinished test)
+   O'quvchi loginiga bog'lab saqlanadi — bitta qurilmada ketma-ket
+   turli o'quvchilar test topshirsa, bir-birining sessiyasi aralashmasin.
 ═══════════════════════════════════════════════ */
+function sessionStorageKey() { return `ustoz_pro_session_v5__${studentInfo?.login || 'anon'}`; }
 function saveSession() {
   const answers = {};
   for (let i=0;i<testState.questions.length;i++) {
     const sel = document.querySelector(`input[name="q${i}"]:checked`);
     if (sel) answers[i] = sel.value;
   }
-  localStorage.setItem('ustoz_pro_session_v4', JSON.stringify({
+  localStorage.setItem(sessionStorageKey(), JSON.stringify({
     questions:testState.questions, bookmarks:[...testState.bookmarks],
     cheats:testState.cheats, startTime:testState.startTime?.toISOString(),
     totalSecs:testState.totalSecs, remainingSecs:testState.remainingSecs,
@@ -545,9 +586,9 @@ function saveSession() {
     answers
   }));
 }
-function clearSession() { localStorage.removeItem('ustoz_pro_session_v4'); }
+function clearSession() { localStorage.removeItem(sessionStorageKey()); }
 function checkForResumeSession() {
-  const raw = localStorage.getItem('ustoz_pro_session_v4');
+  const raw = localStorage.getItem(sessionStorageKey());
   if (!raw) return;
   try {
     const s = JSON.parse(raw);
@@ -560,14 +601,14 @@ function checkForResumeSession() {
 function showResumeBannerOnHome(session) {
   const rem = session.totalSecs - Math.floor((Date.now()-new Date(session.startTime).getTime())/1000);
   const m=Math.floor(rem/60),s=rem%60;
-  const hs = document.getElementById('screen-home');
+  const hs = document.getElementById('studentPanelContent');
   document.getElementById('resumeBanner')?.remove();
   const b = document.createElement('div');
   b.id='resumeBanner'; b.className='resume-banner';
   b.innerHTML=`<div class="resume-banner-icon">⏸️</div>
     <div class="resume-banner-info">
       <div class="resume-banner-title">Tugallanmagan test topildi!</div>
-      <div class="resume-banner-sub">${session.studentName} · ${session.subjectName} · Qolgan: ${m}:${s<10?'0'+s:s}</div>
+      <div class="resume-banner-sub">${session.subjectName} · Qolgan: ${m}:${s<10?'0'+s:s}</div>
     </div>
     <div class="resume-banner-actions">
       <button class="btn btn-primary btn-sm" onclick="resumeSession()">▶ Davom etish</button>
@@ -576,7 +617,7 @@ function showResumeBannerOnHome(session) {
   hs.insertBefore(b, hs.firstChild);
 }
 function resumeSession() {
-  const raw = localStorage.getItem('ustoz_pro_session_v4'); if (!raw) return;
+  const raw = localStorage.getItem(sessionStorageKey()); if (!raw) return;
   const session = JSON.parse(raw);
   const elapsed = Math.floor((Date.now()-new Date(session.startTime).getTime())/1000);
   const remaining = session.totalSecs - elapsed;
@@ -730,7 +771,7 @@ async function syncData() {
    CLASS MANAGEMENT (admin)
 ═══════════════════════════════════════════════ */
 function populateClassSelects() {
-  ['sClass','manageClass','manageClassSub','qClass','stuClass'].forEach(id=>{
+  ['manageClass','manageClassSub','qClass','tQClass'].forEach(id=>{
     const sel=document.getElementById(id); if(!sel) return;
     const cur=sel.value;
     sel.innerHTML='<option value="">— Sinfni tanlang —</option>';
@@ -742,16 +783,12 @@ async function syncManageSelects() {
   await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
   populateClassSelects(); renderClassList();
 }
-function updateTestUI() {
-  const clsName=document.getElementById('sClass').value;
-  const sn=document.getElementById('sName'); const ss=document.getElementById('sSub');
-  sn.innerHTML='<option value="">— O\'quvchini tanlang —</option>';
-  ss.innerHTML='<option value="">— Fanni tanlang —</option>';
-  const cls = classesCache.find(c=>c.name===clsName);
-  if (cls) {
-    studentsForClass(cls.id).forEach(s=>sn.innerHTML+=`<option value="${esc(s.full_name)}">${esc(s.full_name)}</option>`);
-    subjectsForClass(cls.id).forEach(s=>ss.innerHTML+=`<option value="${esc(s.name)}">${esc(s.name)}</option>`);
-  }
+// O'quvchi paneli — faqat o'z sinfi bo'yicha fan tanlanadi (sinf/ism allaqachon hisobdan ma'lum)
+function populateStudentTestSubjectSelect() {
+  const sel = document.getElementById('stuTestSubject'); if (!sel) return;
+  sel.innerHTML = '<option value="">— Fanni tanlang —</option>';
+  const cls = classesCache.find(c=>c.name===studentInfo?.class_name);
+  if (cls) subjectsForClass(cls.id).forEach(s=>sel.innerHTML+=`<option value="${esc(s.name)}">${esc(s.name)}</option>`);
 }
 async function addClass() {
   if (classAddBusy) return;
@@ -817,6 +854,12 @@ async function removeStudent(id,name) {
   renderStudentList(); renderClassList();
   showToast('🗑️',`"${name}" o'chirildi.`,'info'); updateDashboardStats();
 }
+let studentLoginsCache = {}; // student_id -> login (admin_list_student_logins RPC orqali)
+async function refreshStudentLoginsCache() {
+  const { data } = await supabaseClient.rpc('admin_list_student_logins');
+  studentLoginsCache = {};
+  (data||[]).forEach(r=>{ studentLoginsCache[r.student_id] = r.login; });
+}
 function renderStudentList() {
   const clsName=document.getElementById('manageClass')?.value;
   const cls = classesCache.find(c=>c.name===clsName);
@@ -826,17 +869,54 @@ function renderStudentList() {
   const list = term ? students.filter(s=>s.full_name.toLowerCase().includes(term)) : students;
   document.getElementById('studentList').innerHTML=list.length===0
     ?`<div class="empty-state">${term?'Qidiruv bo\'yicha o\'quvchi topilmadi.':(cls?'O\'quvchilar yo\'q.':'Sinfni tanlang.')}</div>`
-    :list.map(s=>`<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${esc(s.full_name)}</span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="resetStudentPin('${s.id}','${s.full_name.replace(/'/g,"\\'")}')" title="PIN yaratish/qayta tiklash">🔑</button><button class="li-del" onclick="removeStudent('${s.id}','${s.full_name.replace(/'/g,"\\'")}')">🗑️</button></div></div>`).join('');
+    :list.map(s=>{
+      const login = studentLoginsCache[s.id];
+      const nameEsc = s.full_name.replace(/'/g,"\\'");
+      const credBtn = login
+        ? `<button class="li-del" style="color:var(--primary)" onclick="resetOneStudentPassword('${s.id}','${nameEsc}')" title="Parolni tiklash">🔄</button>`
+        : `<button class="li-del" style="color:var(--primary)" onclick="createOneStudentLogin('${s.id}','${nameEsc}')" title="Login yaratish">🔑</button>`;
+      return `<div class="list-item"><div class="li-icon">👤</div><span class="li-text">${esc(s.full_name)}${login?` <span style="color:var(--text-dim);font-size:11px">(${esc(login)})</span>`:''}</span><div style="display:flex;gap:4px">${credBtn}<button class="li-del" onclick="removeStudent('${s.id}','${nameEsc}')">🗑️</button></div></div>`;
+    }).join('');
 }
-async function resetStudentPin(id, name) {
-  if (!confirm(`"${name}" uchun yangi PIN yaratilsinmi? Eski PIN (agar bo'lsa) endi ishlamay qoladi.`)) return;
-  const { data, error } = await supabaseClient.rpc('admin_reset_student_pin', { p_student_id: id });
-  if (error) { showToast('❌','PIN yaratishda xatolik','error'); return; }
-  document.getElementById('pinResultDesc').innerText = `"${name}" uchun yangi PIN-kod:`;
-  document.getElementById('pinResultValue').innerText = data;
-  document.getElementById('pinResultOverlay').classList.remove('hidden');
+async function createOneStudentLogin(id, name) {
+  const { data, error } = await supabaseClient.rpc('admin_create_student_login', { p_student_id: id });
+  if (error) { showToast('❌','Login yaratishda xatolik','error'); return; }
+  const row = data && data[0];
+  document.getElementById('credResultTitle').innerText = 'Yangi login yaratildi';
+  document.getElementById('credResultDesc').innerText = `"${name}" uchun:`;
+  document.getElementById('credResultLogin').innerText = row.login;
+  document.getElementById('credResultPassword').innerText = row.password;
+  document.getElementById('credResultOverlay').classList.remove('hidden');
+  await refreshStudentLoginsCache();
+  renderStudentList();
 }
-function closePinResultModal() { document.getElementById('pinResultOverlay').classList.add('hidden'); }
+function closeCredResultModal() { document.getElementById('credResultOverlay').classList.add('hidden'); }
+async function resetOneStudentPassword(id, name) {
+  const newPass = prompt(`"${name}" uchun yangi parol kiriting (kamida 6 belgi):`);
+  if (!newPass) return;
+  if (newPass.length < 6) { showToast('⚠️','Parol kamida 6 belgidan iborat bo\'lsin!','warning'); return; }
+  const { error } = await supabaseClient.rpc('admin_reset_student_password', { p_student_id: id, p_new_password: newPass });
+  if (error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  showToast('✅',`"${name}" paroli yangilandi`,'success');
+}
+async function bulkCreateStudentLogins() {
+  const { data, error } = await supabaseClient.rpc('admin_bulk_create_student_logins');
+  if (error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  const rows = data || [];
+  if (rows.length === 0) { showToast('ℹ️','Barcha o\'quvchilarda login allaqachon bor','info'); return; }
+  document.getElementById('bulkCredDesc').innerText = `${rows.length} ta o'quvchi uchun yaratildi. Bu ro'yxat faqat hozir ko'rinadi — nusxalab yoki chop etib saqlang.`;
+  document.getElementById('bulkCredList').innerHTML = rows.map(r=>`<div style="padding:6px 0;border-bottom:1px solid var(--border)"><b>${esc(r.full_name)}</b> (${esc(r.class_name)})<br>login: <b>${esc(r.login)}</b> · parol: <b>${esc(r.password)}</b></div>`).join('');
+  window.__lastBulkCred = rows;
+  document.getElementById('bulkCredOverlay').classList.remove('hidden');
+  await refreshStudentLoginsCache();
+  renderStudentList();
+}
+function closeBulkCredModal() { document.getElementById('bulkCredOverlay').classList.add('hidden'); }
+function copyBulkCredList() {
+  const rows = window.__lastBulkCred || [];
+  const text = rows.map(r=>`${r.full_name} (${r.class_name}) — login: ${r.login}, parol: ${r.password}`).join('\n');
+  navigator.clipboard.writeText(text).then(()=>showToast('📋','Nusxalandi!','success')).catch(()=>showToast('❌','Nusxalashda xatolik','error'));
+}
 
 /* ═══════════════════════════════════════════════
    TEACHER MANAGEMENT (admin) — fan bo'yicha cheklangan o'qituvchi hisoblari
@@ -1043,7 +1123,10 @@ async function saveQuestion() {
   showToast('✅', wasEdit?'Savol yangilandi!':'Savol qo\'shildi!','success');
 }
 async function removeQuestion(id) {
-  if (!confirm('Bu savolni o\'chirasizmi?')) return;
+  const q = allQuestions.find(x=>x.id===id);
+  const preview = q ? (q.question_text.length>50 ? q.question_text.slice(0,50)+'…' : q.question_text) : '';
+  const ok = await askTypeConfirm('Savolni o\'chirish', `"${preview}" savoli butunlay o'chadi.`, 'OCHIRISH');
+  if (!ok) return;
   const { error } = await supabaseClient.from('questions').delete().eq('id', id);
   if (error) { showToast('❌','Xatolik','error'); return; }
   if (editingQuestionId===id) cancelEditQuestion();
@@ -1100,6 +1183,196 @@ async function bulkAddQuestions() {
 }
 
 /* ═══════════════════════════════════════════════
+   QUESTION MANAGEMENT (teacher) — screen-teacher, faqat o'z fani
+═══════════════════════════════════════════════ */
+function teacherOnQClassChange() {
+  const clsName=document.getElementById('tQClass').value;
+  const qs=document.getElementById('tQSubject');
+  qs.innerHTML='<option value="">— Avval sinfni tanlang —</option>';
+  document.getElementById('tQuestionListArea').innerHTML='';
+  document.getElementById('tQuestionCount').innerText='0';
+  teacherCancelEditQuestion();
+  const cls = classesCache.find(c=>c.name===clsName);
+  if (!cls) return;
+  const opts = subjectsForClass(cls.id).filter(s=>teacherSubjects.includes(s.name));
+  qs.innerHTML='<option value="">— Fanni tanlang —</option>'+opts.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+}
+async function teacherRenderQuestionList() {
+  const subjectId=document.getElementById('tQSubject')?.value;
+  const area=document.getElementById('tQuestionListArea');
+  teacherCancelEditQuestion();
+  const searchEl=document.getElementById('tQSearchInput'); if (searchEl) searchEl.value='';
+  if (!subjectId) { area.innerHTML=''; document.getElementById('tQuestionCount').innerText='0'; teacherQuestions=[]; return; }
+  const { data, error } = await supabaseClient.from('questions').select('*').eq('subject_id', subjectId).order('created_at');
+  if (error) { area.innerHTML=`<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
+  teacherQuestions = data||[];
+  teacherRenderFilteredQuestions();
+}
+function teacherRenderFilteredQuestions() {
+  const area=document.getElementById('tQuestionListArea');
+  const term=(document.getElementById('tQSearchInput')?.value||'').trim().toLowerCase();
+  document.getElementById('tQuestionCount').innerText=teacherQuestions.length;
+  const list = term ? teacherQuestions.filter(q=>q.question_text.toLowerCase().includes(term)) : teacherQuestions;
+  area.innerHTML=list.length===0
+    ?`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`
+    :list.map(q=>`<div class="list-item ${editingTeacherQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="teacherEditQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="teacherRemoveQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('');
+}
+function teacherEditQuestion(id) {
+  const q = teacherQuestions.find(x=>x.id===id);
+  if (!q) return;
+  editingTeacherQuestionId = id;
+  document.getElementById('tNewQText').value = q.question_text||'';
+  document.getElementById('tNewQA').value = q.option_a||'';
+  document.getElementById('tNewQB').value = q.option_b||'';
+  document.getElementById('tNewQC').value = q.option_c||'';
+  document.getElementById('tNewQD').value = q.option_d||'';
+  document.getElementById('tNewQCorrect').value = q.correct_option||'a';
+  document.getElementById('tNewQHint').value = q.hint||'';
+  teacherUpdateQuestionFormMode();
+  document.getElementById('tNewQText').scrollIntoView({behavior:'smooth',block:'center'});
+  teacherRenderFilteredQuestions();
+}
+function teacherCancelEditQuestion() {
+  if (!editingTeacherQuestionId) return;
+  editingTeacherQuestionId = null;
+  ['tNewQText','tNewQA','tNewQB','tNewQC','tNewQD','tNewQHint'].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
+  const correctEl=document.getElementById('tNewQCorrect'); if (correctEl) correctEl.value='a';
+  teacherUpdateQuestionFormMode();
+}
+function teacherUpdateQuestionFormMode() {
+  const btn=document.getElementById('tQSaveBtn'), cancelBtn=document.getElementById('tQCancelEditBtn'), title=document.getElementById('tQFormTitle');
+  if (editingTeacherQuestionId) {
+    if (btn) btn.innerText='💾 Yangilash';
+    if (cancelBtn) cancelBtn.style.display='';
+    if (title) title.innerText='Savolni tahrirlash';
+  } else {
+    if (btn) btn.innerText="+ Savol qo'shish";
+    if (cancelBtn) cancelBtn.style.display='none';
+    if (title) title.innerText="Savol qo'shish";
+  }
+}
+async function teacherSaveQuestion() {
+  if (teacherQuestionSaveBusy) return;
+  const subjectId=document.getElementById('tQSubject')?.value;
+  const text=document.getElementById('tNewQText').value.trim();
+  const a=document.getElementById('tNewQA').value.trim();
+  const b=document.getElementById('tNewQB').value.trim();
+  const c=document.getElementById('tNewQC').value.trim();
+  const d=document.getElementById('tNewQD').value.trim();
+  const correct=document.getElementById('tNewQCorrect').value;
+  const hint=document.getElementById('tNewQHint').value.trim();
+  if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
+  if (!text||!a||!b) { showToast('⚠️','Savol matni va kamida A/B variantlarini kiriting!','warning'); return; }
+  teacherQuestionSaveBusy = true;
+  const btn=document.getElementById('tQSaveBtn'); if (btn) btn.disabled=true;
+  const payload = { subject_id: subjectId, question_text: text, option_a:a, option_b:b, option_c:c, option_d:d, correct_option: correct, hint };
+  const wasEdit = !!editingTeacherQuestionId;
+  const { error } = wasEdit
+    ? await supabaseClient.from('questions').update(payload).eq('id', editingTeacherQuestionId)
+    : await supabaseClient.from('questions').insert(payload);
+  teacherQuestionSaveBusy = false; if (btn) btn.disabled=false;
+  if (error) { showToast('❌','Saqlashda xatolik','error'); return; }
+  editingTeacherQuestionId = null;
+  ['tNewQText','tNewQA','tNewQB','tNewQC','tNewQD','tNewQHint'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('tNewQCorrect').value='a';
+  teacherUpdateQuestionFormMode();
+  await teacherRenderQuestionList();
+  showToast('✅', wasEdit?'Savol yangilandi!':'Savol qo\'shildi!','success');
+}
+async function teacherRemoveQuestion(id) {
+  const q = teacherQuestions.find(x=>x.id===id);
+  const preview = q ? (q.question_text.length>50 ? q.question_text.slice(0,50)+'…' : q.question_text) : '';
+  const ok = await askTypeConfirm('Savolni o\'chirish', `"${preview}" savoli butunlay o'chadi.`, 'OCHIRISH');
+  if (!ok) return;
+  const { error } = await supabaseClient.from('questions').delete().eq('id', id);
+  if (error) { showToast('❌','Xatolik','error'); return; }
+  if (editingTeacherQuestionId===id) teacherCancelEditQuestion();
+  await teacherRenderQuestionList();
+  showToast('🗑️','Savol o\'chirildi.','info');
+}
+async function teacherBulkAddQuestions() {
+  if (teacherBulkAddBusy) return;
+  const subjectId=document.getElementById('tQSubject')?.value;
+  const raw = document.getElementById('tBulkQText').value;
+  if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
+  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  if (lines.length===0) { showToast('⚠️','Matn bo\'sh!','warning'); return; }
+
+  const rows = [];
+  const badLines = [];
+  lines.forEach((line,idx)=>{
+    const parts = line.split('|').map(p=>p.trim());
+    if (parts.length<6) { badLines.push(idx+1); return; }
+    const [q,a,b,c,d,cr,...hintParts] = parts;
+    const correct = (cr||'').toLowerCase();
+    if (!q||!a||!b||!['a','b','c','d'].includes(correct)) { badLines.push(idx+1); return; }
+    rows.push({
+      subject_id: subjectId, question_text:q, option_a:a, option_b:b, option_c:c||'', option_d:d||'',
+      correct_option:correct, hint:hintParts.join('|').trim()
+    });
+  });
+
+  const box=document.getElementById('tBulkQStatusBox');
+  if (rows.length===0) {
+    if (box) { box.style.display='block'; box.innerHTML=`<div style="padding:13px;background:var(--danger-pale);border:1px solid rgba(220,38,38,0.2);border-radius:var(--r-sm);font-size:12px;color:#991b1b">❌ To'g'ri formatdagi qator topilmadi. Format: Savol | A | B | C | D | to'g'ri(a/b/c/d) | Izoh</div>`; }
+    return;
+  }
+
+  teacherBulkAddBusy = true;
+  const btn=document.getElementById('tBulkQBtn'); if (btn) btn.disabled=true;
+  const { error } = await supabaseClient.from('questions').insert(rows);
+  teacherBulkAddBusy = false; if (btn) btn.disabled=false;
+
+  if (error) { showToast('❌','Saqlashda xatolik yuz berdi','error'); return; }
+  document.getElementById('tBulkQText').value='';
+  if (box) {
+    box.style.display='block';
+    box.innerHTML=`<div style="padding:13px;background:var(--success-pale);border:1px solid rgba(5,150,105,0.2);border-radius:var(--r-sm);font-size:12px;color:#065f46">✅ <b>${rows.length}</b> ta savol qo'shildi${badLines.length?`, ${badLines.length} ta qator (${badLines.join(', ')}-qator) noto'g'ri formatda bo'lgani uchun o'tkazib yuborildi`:''}.</div>`;
+  }
+  await teacherRenderQuestionList();
+  showToast('✅','Ommaviy qo\'shish tugadi!','success',`${rows.length} ta savol qo'shildi`);
+}
+
+/* ═══════════════════════════════════════════════
+   RESULTS TABLE (teacher) — RLS orqali faqat o'z faniga cheklangan
+═══════════════════════════════════════════════ */
+function teacherRenderResultsTable() {
+  const fcls = document.getElementById('tFilterClass')?.value||'';
+  const fsub = document.getElementById('tFilterSubject')?.value||'';
+  let rows = teacherResults||[];
+  if (fcls) rows = rows.filter(r=>r.class_name===fcls);
+  if (fsub) rows = rows.filter(r=>r.subject_name===fsub);
+  const tbody = document.getElementById('tResultsTableBody');
+  if (!tbody) return;
+  if (rows.length===0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--text-dim)">Ma\'lumot yo\'q</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((r,i)=>{
+    const pct = r.percent||0;
+    const cls = pct>=70?'high':pct>=50?'mid':'low';
+    return `<tr>
+      <td class="rank-cell">${i+1}</td>
+      <td><b>${esc(r.student_name)}</b></td>
+      <td>${esc(r.class_name)}</td>
+      <td>${esc(r.subject_name)}</td>
+      <td>${r.score}/${r.total}</td>
+      <td><span class="score-chip ${cls}">${pct}%</span></td>
+      <td style="font-size:11px;color:var(--text-dim)">${fmtDate(r.created_at)}</td>
+      <td><button class="li-del" onclick="teacherDeleteResult('${r.id}')" title="O'chirish">🗑️</button></td>
+    </tr>`;
+  }).join('');
+}
+async function teacherDeleteResult(id) {
+  if (!confirm('Bu natijani o\'chirasizmi?')) return;
+  const { error } = await supabaseClient.from('results').delete().eq('id', id);
+  if (error) { showToast('❌','Xatolik (bu fan sizga tegishli emas bo\'lishi mumkin)','error'); return; }
+  teacherResults = teacherResults.filter(r=>r.id!==id);
+  teacherRenderResultsTable();
+  showToast('🗑️','Natija o\'chirildi.','info');
+}
+
+/* ═══════════════════════════════════════════════
    MANAGE TABS
 ═══════════════════════════════════════════════ */
 function switchMTab(tab) {
@@ -1150,33 +1423,20 @@ function renderRecentResults() {
    (correct answers are never sent to the client before submission)
 ═══════════════════════════════════════════════ */
 async function startTest() {
-  const cls  = document.getElementById('sClass').value;
-  const sub  = document.getElementById('sSub').value;
-  const name = document.getElementById('sName').value;
+  if (!studentLoggedIn || !studentInfo) { showToast('❌','Avval o\'quvchi sifatida kiring','error'); return; }
+  const sub = document.getElementById('stuTestSubject').value;
+  if (!sub) { showToast('⚠️','Fanni tanlang!','warning'); return; }
 
-  if (!cls||!sub||!name){showToast('⚠️','Barcha maydonlarni to\'ldiring!','warning');return;}
-
-  // Boshqa o'quvchining tugallanmagan sessiyasini bilmasdan o'chirib yubormaslik uchun ogohlantirish
-  const danglingRaw = localStorage.getItem('ustoz_pro_session_v4');
-  if (danglingRaw) {
-    try {
-      const dangling = JSON.parse(danglingRaw);
-      if (dangling.studentName && dangling.studentName !== name) {
-        const ok = confirm(`Diqqat: "${dangling.studentName}" ismli o'quvchining tugallanmagan testi bor edi. Yangi test boshlansa, u butunlay o'chadi. Baribir davom etasizmi?`);
-        if (!ok) return;
-      }
-    } catch(e) { /* buzilgan sessiya — e'tiborsiz qoldiramiz */ }
-  }
-
-  const count = settings.allow_custom ? (parseInt(document.getElementById('sCount').value)||15) : settings.question_count;
-  const mins  = settings.allow_custom ? (parseInt(document.getElementById('sTime').value)||20)  : settings.time_limit_minutes;
+  const count = settings.allow_custom ? (parseInt(document.getElementById('stuCount').value)||15) : settings.question_count;
+  const mins  = settings.allow_custom ? (parseInt(document.getElementById('stuTime').value)||20)  : settings.time_limit_minutes;
 
   let resp;
-  try { resp = await callEdgeFunction('get-test', { class_name:cls, subject_name:sub, student_name:name, count }); }
+  try { resp = await callEdgeFunction('get-test', { subject_name:sub, count }); }
   catch(e) { showToast('❌','Server bilan bog\'lanishda xatolik','error'); return; }
 
+  if (resp.error==='unauthorized'||resp.error==='not_a_student') { showToast('❌','Sessiya muddati tugagan, qayta kiring','error'); doLogout(); return; }
   if (resp.error==='attempt_limit_reached') { showToast('🚫','Urinishlar soni tugadi!','error',`${sub} fani uchun ${resp.max_attempts} ta urinish haddi`); return; }
-  if (resp.error==='no_questions'||resp.error==='class_not_found'||resp.error==='subject_not_found') { showToast('📚','Savollar topilmadi!','error',`${cls} · ${sub} uchun avval savol qo'shing`); return; }
+  if (resp.error==='no_questions'||resp.error==='subject_not_found') { showToast('📚','Savollar topilmadi!','error',`${sub} uchun hali savol yo'q`); return; }
   if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
 
   clearSession();
@@ -1186,13 +1446,13 @@ async function startTest() {
   testState.startTime = new Date();
   testState.totalSecs = mins*60;
   testState.remainingSecs = mins*60;
-  testState.studentName = name;
-  testState.className = cls;
+  testState.studentName = resp.student.full_name;
+  testState.className = resp.student.class_name;
   testState.subjectName = sub;
   testState.lastAnswers = {};
   testState.lastWrongReview = [];
 
-  document.getElementById('timerStudentChip').innerText=`👤 ${name}`;
+  document.getElementById('timerStudentChip').innerText=`👤 ${testState.studentName}`;
   document.getElementById('timerSubChip').innerText=`📚 ${sub}`;
 
   renderQuestions();
@@ -1338,8 +1598,6 @@ async function finishTest(){
   let resp;
   try {
     resp = await callEdgeFunction('submit-result', {
-      student_name: testState.studentName,
-      class_name: testState.className,
       subject_name: testState.subjectName,
       question_ids: testState.questions.map(q=>q.id),
       answers: testState.lastAnswers,
@@ -1347,6 +1605,7 @@ async function finishTest(){
       elapsed_seconds: elapsed
     });
   } catch(e) { showToast('❌','Natijani yuborishda xatolik','error'); return; }
+  if (resp.error==='unauthorized'||resp.error==='not_a_student') { showToast('❌','Sessiya muddati tugagan, qayta kiring','error'); doLogout(); return; }
   if (resp.error) { showToast('❌','Xatolik: '+resp.error,'error'); return; }
 
   testState.lastWrongReview = resp.wrong_review||[];
@@ -1496,108 +1755,35 @@ function launchConfetti(percent){
 }
 
 /* ═══════════════════════════════════════════════
-   STUDENT CABINET — shaxsiy PIN orqali kirish (Supabase Auth emas,
-   student-login/-me/-change-pin/-logout Edge Function'lari orqali)
+   STUDENT CABINET — haqiqiy Supabase Auth (login+parol) orqali kirish.
+   Ma'lumotlar endi to'g'ridan-to'g'ri RLS orqali (get_my_rating RPC +
+   results jadvalidan o'z qatorlari) olinadi, alohida Edge Function shart emas.
 ═══════════════════════════════════════════════ */
-const STUDENT_SESSION_KEY = 'ustoz_pro_student_session';
-let studentSession = null; // {token, name, className}
-let studentLoginBusy = false;
-let studentPinChangeBusy = false;
-
-function loadStudentSessionFromStorage() {
-  try {
-    const raw = localStorage.getItem(STUDENT_SESSION_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    if (!s?.token) return null;
-    return s;
-  } catch(e) { return null; }
-}
-function saveStudentSession(s) { localStorage.setItem(STUDENT_SESSION_KEY, JSON.stringify(s)); }
-function clearStudentSession() { localStorage.removeItem(STUDENT_SESSION_KEY); }
-
-function initStudentScreen() {
-  studentSession = loadStudentSessionFromStorage();
-  if (studentSession) {
-    document.getElementById('studentLoginCard').style.display = 'none';
-    document.getElementById('studentPanelContent').style.display = 'block';
-    loadStudentPanel();
-  } else {
-    document.getElementById('studentLoginCard').style.display = '';
-    document.getElementById('studentPanelContent').style.display = 'none';
-    document.getElementById('stuPin').value = '';
-  }
-}
-function updateStudentLoginUI() {
-  const clsName = document.getElementById('stuClass').value;
-  const sel = document.getElementById('stuName');
-  sel.innerHTML = '<option value="">— Ismingizni tanlang —</option>';
-  const cls = classesCache.find(c=>c.name===clsName);
-  if (cls) studentsForClass(cls.id).forEach(s=>sel.innerHTML+=`<option value="${esc(s.full_name)}">${esc(s.full_name)}</option>`);
-}
-async function studentLogin() {
-  if (studentLoginBusy) return;
-  const class_name = document.getElementById('stuClass').value;
-  const student_name = document.getElementById('stuName').value;
-  const pin = document.getElementById('stuPin').value.trim();
-  if (!class_name || !student_name) { showToast('⚠️','Sinf va ismingizni tanlang!','warning'); return; }
-  if (!/^\d{4}$/.test(pin)) { showToast('⚠️','PIN 4 xonali raqam bo\'lishi kerak!','warning'); return; }
-
-  studentLoginBusy = true;
-  const btn = document.getElementById('stuLoginBtn'); if (btn) btn.disabled = true;
-  let resp;
-  try { resp = await callEdgeFunction('student-login', { class_name, student_name, pin }); }
-  catch(e) { showToast('❌','Server bilan bog\'lanishda xatolik','error'); studentLoginBusy=false; if(btn) btn.disabled=false; return; }
-  studentLoginBusy = false; if (btn) btn.disabled = false;
-
-  if (resp.error==='invalid_credentials') { showToast('❌','Sinf yoki ism noto\'g\'ri','error'); return; }
-  if (resp.error==='pin_not_set') { showToast('🔒','Sizga hali PIN o\'rnatilmagan','error','O\'qituvchidan so\'rang'); return; }
-  if (resp.error==='wrong_pin') { showToast('❌','PIN noto\'g\'ri!','error',`Qolgan urinishlar: ${resp.attempts_left}`); return; }
-  if (resp.error==='locked') {
-    const until = new Date(resp.locked_until).toLocaleTimeString('uz-UZ');
-    showToast('🚫','Ko\'p xato urinish!','error',`${until}gacha bloklandi`);
-    return;
-  }
-  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
-
-  studentSession = { token: resp.token, name: resp.student.full_name, className: resp.student.class_name };
-  saveStudentSession(studentSession);
-  document.getElementById('studentLoginCard').style.display = 'none';
-  document.getElementById('studentPanelContent').style.display = 'block';
-  document.getElementById('stuPin').value = '';
-  showToast('✅','Xush kelibsiz!','success', studentSession.name);
-  loadStudentPanel();
-}
-async function studentLogout() {
-  if (studentSession?.token) { try { await callEdgeFunction('student-logout', { token: studentSession.token }); } catch(e) {} }
-  studentSession = null;
-  clearStudentSession();
-  document.getElementById('studentLoginCard').style.display = '';
-  document.getElementById('studentPanelContent').style.display = 'none';
-  showToast('👋','Kabinetdan chiqdingiz','info');
-}
 async function loadStudentPanel() {
-  if (!studentSession?.token) return;
-  let resp;
-  try { resp = await callEdgeFunction('student-me', { token: studentSession.token }); }
-  catch(e) { showToast('❌','Ma\'lumotlarni yuklashda xatolik','error'); return; }
-  if (resp.error==='invalid_session') { studentLogout(); showToast('🔒','Sessiya muddati tugagan, qayta kiring','warning'); return; }
-  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  if (!studentLoggedIn || !studentInfo) return;
+  const { data: history, error: hErr } = await supabaseClient
+    .from('results')
+    .select('id, subject_name, score, total, percent, cheat_count, elapsed_seconds, created_at')
+    .eq('student_name', studentInfo.full_name)
+    .eq('class_name', studentInfo.class_name)
+    .order('created_at', { ascending: false });
+  if (hErr) { showToast('❌','Ma\'lumotlarni yuklashda xatolik','error'); return; }
 
-  document.getElementById('stuPanelName').innerText = resp.student.full_name;
-  document.getElementById('stuPanelClass').innerText = `🏫 ${resp.student.class_name}`;
-  renderStudentRatingCards(resp.monthly_rating, resp.mutolaa_rating);
-  renderStudentHistory(resp.history||[]);
-  renderStudentProgressCharts(resp.history||[]);
+  const { data: ratingRows, error: rErr } = await supabaseClient.rpc('get_my_rating');
+  const rating = (!rErr && ratingRows && ratingRows[0]) || null;
+
+  renderStudentRatingCards(rating);
+  renderStudentHistory(history||[]);
+  renderStudentProgressCharts(history||[]);
 }
-function renderStudentRatingCards(monthly, mutolaa) {
+function renderStudentRatingCards(rating) {
   const el = document.getElementById('stuRatingCards');
   const cards = [];
-  if (monthly) {
-    cards.push(`<div class="stat-card blue"><div class="stat-icon">🏆</div><div class="stat-num">#${monthly.rank}</div><div class="stat-lbl">1200 ballik reyting (${monthly.total_students} o'quvchidan)</div><div class="stat-trend trend-up">${monthly.score} ball</div></div>`);
+  if (rating?.monthly_rank) {
+    cards.push(`<div class="stat-card blue"><div class="stat-icon">🏆</div><div class="stat-num">#${rating.monthly_rank}</div><div class="stat-lbl">1200 ballik reyting (${rating.monthly_total} o'quvchidan)</div><div class="stat-trend trend-up">${rating.monthly_score} ball</div></div>`);
   }
-  if (mutolaa) {
-    cards.push(`<div class="stat-card purple"><div class="stat-icon">📖</div><div class="stat-num">#${mutolaa.rank}</div><div class="stat-lbl">Mutolaa reytingi (${mutolaa.total_students} o'quvchidan)</div><div class="stat-trend trend-up">${mutolaa.score} ball</div></div>`);
+  if (rating?.mutolaa_rank) {
+    cards.push(`<div class="stat-card purple"><div class="stat-icon">📖</div><div class="stat-num">#${rating.mutolaa_rank}</div><div class="stat-lbl">Mutolaa reytingi (${rating.mutolaa_total} o'quvchidan)</div><div class="stat-trend trend-up">${rating.mutolaa_score} ball</div></div>`);
   }
   el.innerHTML = cards.length ? cards.join('') : '<div class="empty-state">Reytingga tushish uchun kamida bitta test topshiring.</div>';
 }
@@ -1639,23 +1825,23 @@ function renderStudentProgressCharts(history) {
     </div>`;
   }).join('');
 }
-async function changeStudentPin() {
-  if (studentPinChangeBusy) return;
-  const old_pin = document.getElementById('stuOldPin').value.trim();
-  const new_pin = document.getElementById('stuNewPin').value.trim();
-  if (!/^\d{4}$/.test(old_pin) || !/^\d{4}$/.test(new_pin)) { showToast('⚠️','PIN 4 xonali raqam bo\'lishi kerak!','warning'); return; }
-  studentPinChangeBusy = true;
-  const btn = document.getElementById('stuChangePinBtn'); if (btn) btn.disabled = true;
-  let resp;
-  try { resp = await callEdgeFunction('student-change-pin', { token: studentSession.token, old_pin, new_pin }); }
-  catch(e) { showToast('❌','Xatolik yuz berdi','error'); studentPinChangeBusy=false; if(btn) btn.disabled=false; return; }
-  studentPinChangeBusy = false; if (btn) btn.disabled = false;
+// Umumiy "parolni almashtirish" — admin/o'qituvchi/o'quvchi barchasi uchun bir xil,
+// Supabase Auth'ning tayyor metodi orqali (maxsus RPC/Edge Function shart emas).
+let passwordChangeBusy = false;
+async function changeMyPassword() {
+  if (passwordChangeBusy) return;
+  const idPrefix = teacherLoggedIn ? 't' : 'stu';
+  const p1 = document.getElementById(`${idPrefix}NewPassword`)?.value || '';
+  const p2 = document.getElementById(`${idPrefix}NewPasswordConfirm`)?.value || '';
+  if (p1.length < 6) { showToast('⚠️','Parol kamida 6 belgidan iborat bo\'lsin!','warning'); return; }
+  if (p1 !== p2) { showToast('⚠️','Parollar mos kelmadi!','warning'); return; }
 
-  if (resp.error==='wrong_pin') { showToast('❌','Eski PIN noto\'g\'ri!','error'); return; }
-  if (resp.error==='invalid_session') { studentLogout(); return; }
-  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  passwordChangeBusy = true;
+  const { error } = await supabaseClient.auth.updateUser({ password: p1 });
+  passwordChangeBusy = false;
+  if (error) { showToast('❌','Xatolik yuz berdi','error'); return; }
 
-  document.getElementById('stuOldPin').value = '';
-  document.getElementById('stuNewPin').value = '';
-  showToast('✅','PIN yangilandi!','success');
+  document.getElementById(`${idPrefix}NewPassword`).value = '';
+  document.getElementById(`${idPrefix}NewPasswordConfirm`).value = '';
+  showToast('✅','Parol yangilandi!','success');
 }
