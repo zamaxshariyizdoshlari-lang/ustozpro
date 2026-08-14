@@ -143,15 +143,33 @@ function saveSettings() {
     applySettingsToTestSetup();
   });
 }
+// Sinf uchun alohida sozlama (class_settings) bo'lsa, global settings'ni shu bilan
+// birlashtiradi (null maydonlar globaldan meros olinadi). Faqat o'quvchi paneli uchun.
+let studentEffectiveSettings = null;
+async function computeStudentEffectiveSettings() {
+  const eff = { ...settings };
+  const cls = classesCache.find(c=>c.name===studentInfo?.class_name);
+  if (cls) {
+    const { data: cs } = await supabaseClient.from('class_settings').select('*').eq('class_id', cls.id).maybeSingle();
+    if (cs) {
+      eff.question_count = cs.question_count ?? eff.question_count;
+      eff.time_limit_minutes = cs.time_limit_minutes ?? eff.time_limit_minutes;
+      eff.max_attempts = cs.max_attempts ?? eff.max_attempts;
+      eff.enable_attempt_limit = cs.enable_attempt_limit ?? eff.enable_attempt_limit;
+    }
+  }
+  studentEffectiveSettings = eff;
+}
 function applySettingsToTestSetup() {
-  const allowed = settings.allow_custom;
+  const eff = studentEffectiveSettings || settings;
+  const allowed = eff.allow_custom;
   const controls = document.getElementById('stuTestSetupControls');
   const note = document.getElementById('stuAdminSettingsNote');
   const noteText = document.getElementById('stuAdminSettingsNoteText');
   if (controls) controls.style.display = allowed ? '' : 'none';
   if (note) {
     note.style.display = allowed ? 'none' : 'flex';
-    if (noteText) noteText.textContent = `Savol soni: ${settings.question_count} ta · Vaqt: ${settings.time_limit_minutes} daqiqa (admin tomonidan belgilangan)`;
+    if (noteText) noteText.textContent = `Savol soni: ${eff.question_count} ta · Vaqt: ${eff.time_limit_minutes} daqiqa (admin tomonidan belgilangan)`;
   }
 }
 
@@ -350,6 +368,7 @@ async function enterStudentMode() {
   document.getElementById('stuPanelName').innerText = studentInfo.full_name;
   document.getElementById('stuPanelClass').innerText = `🏫 ${studentInfo.class_name}`;
   populateStudentTestSubjectSelect();
+  await computeStudentEffectiveSettings();
   applySettingsToTestSetup();
   navigateTo('student');
   checkForResumeSession();
@@ -360,6 +379,45 @@ function loadSettingsUI() {
   document.getElementById('settingTimeLimit').value            = settings.time_limit_minutes;
   document.getElementById('settingAllowCustom').checked        = settings.allow_custom;
   document.getElementById('settingEnableAttemptLimit').checked = settings.enable_attempt_limit;
+  const csSel = document.getElementById('classSettingsSelect');
+  if (csSel) csSel.innerHTML = '<option value="">— Sinfni tanlang —</option>'+classesCache.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  document.getElementById('classSettingsFields').style.display = 'none';
+}
+async function loadClassSettings() {
+  const clsId = document.getElementById('classSettingsSelect').value;
+  const fields = document.getElementById('classSettingsFields');
+  if (!clsId) { fields.style.display='none'; return; }
+  fields.style.display='';
+  const { data } = await supabaseClient.from('class_settings').select('*').eq('class_id', clsId).maybeSingle();
+  document.getElementById('csQuestionCount').value = data?.question_count ?? '';
+  document.getElementById('csTimeLimit').value = data?.time_limit_minutes ?? '';
+  document.getElementById('csMaxAttempts').value = data?.max_attempts ?? '';
+  document.getElementById('csEnableAttemptLimit').value = data?.enable_attempt_limit===true ? 'true' : data?.enable_attempt_limit===false ? 'false' : '';
+}
+async function saveClassSettings() {
+  const clsId = document.getElementById('classSettingsSelect').value;
+  if (!clsId) return;
+  const qc = document.getElementById('csQuestionCount').value;
+  const tl = document.getElementById('csTimeLimit').value;
+  const ma = document.getElementById('csMaxAttempts').value;
+  const eal = document.getElementById('csEnableAttemptLimit').value;
+  const payload = {
+    class_id: clsId,
+    question_count: qc===''?null:parseInt(qc),
+    time_limit_minutes: tl===''?null:parseInt(tl),
+    max_attempts: ma===''?null:parseInt(ma),
+    enable_attempt_limit: eal===''?null:(eal==='true')
+  };
+  const { error } = await supabaseClient.from('class_settings').upsert(payload);
+  if (error) { showToast('❌','Saqlashda xatolik','error'); return; }
+  showToast('✅','Sinf sozlamalari saqlandi!','success');
+}
+async function resetClassSettings() {
+  const clsId = document.getElementById('classSettingsSelect').value;
+  if (!clsId) return;
+  await supabaseClient.from('class_settings').delete().eq('class_id', clsId);
+  await loadClassSettings();
+  showToast('↩️','Global sozlamaga qaytarildi.','info');
 }
 
 /* ═══════════════════════════════════════════════
@@ -1500,8 +1558,9 @@ async function startTest() {
   const sub = document.getElementById('stuTestSubject').value;
   if (!sub) { showToast('⚠️','Fanni tanlang!','warning'); return; }
 
-  const count = settings.allow_custom ? (parseInt(document.getElementById('stuCount').value)||15) : settings.question_count;
-  const mins  = settings.allow_custom ? (parseInt(document.getElementById('stuTime').value)||20)  : settings.time_limit_minutes;
+  const eff = studentEffectiveSettings || settings;
+  const count = eff.allow_custom ? (parseInt(document.getElementById('stuCount').value)||15) : eff.question_count;
+  const mins  = eff.allow_custom ? (parseInt(document.getElementById('stuTime').value)||20)  : eff.time_limit_minutes;
 
   let resp;
   try { resp = await callEdgeFunction('get-test', { subject_name:sub, count }); }

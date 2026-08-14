@@ -352,6 +352,38 @@
 
               <button class="btn btn-primary btn-md" style="margin-top:14px" onclick="saveSettings();showToast('✅','Sozlamalar saqlandi!','success')">💾 Saqlash</button>
             </div>
+
+            <div class="setup-card">
+              <div class="setup-card-header">
+                <div class="setup-card-icon">🏫</div>
+                <div><div class="setup-card-title">Sinf uchun maxsus sozlamalar</div><div class="setup-card-subtitle">Bo'sh qoldirilgan maydonlar yuqoridagi global sozlamadan meros oladi</div></div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Sinf</label>
+                <select class="form-control select" id="classSettingsSelect" onchange="loadClassSettings()"><option value="">— Sinfni tanlang —</option></select>
+              </div>
+              <div id="classSettingsFields" style="display:none">
+                <div class="form-row">
+                  <div class="form-group"><label class="form-label">Savol soni (bo'sh = global)</label><input type="number" class="form-control" id="csQuestionCount" min="5" max="100"></div>
+                  <div class="form-group"><label class="form-label">Vaqt, daqiqa (bo'sh = global)</label><input type="number" class="form-control" id="csTimeLimit" min="5" max="120"></div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group"><label class="form-label">Max urinish (bo'sh = global)</label><input type="number" class="form-control" id="csMaxAttempts" min="1" max="99"></div>
+                  <div class="form-group">
+                    <label class="form-label">Urinishlar cheklovi</label>
+                    <select class="form-control select" id="csEnableAttemptLimit">
+                      <option value="">— Global sozlamadan meros —</option>
+                      <option value="true">Yoqilgan</option>
+                      <option value="false">O'chirilgan</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <button class="btn btn-primary btn-md" onclick="saveClassSettings()">💾 Saqlash</button>
+                  <button class="btn btn-secondary btn-md" onclick="resetClassSettings()">↩ Standart holatga qaytarish</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

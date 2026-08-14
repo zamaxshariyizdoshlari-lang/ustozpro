@@ -58,16 +58,18 @@ Deno.serve(async (req: Request) => {
     const question_ids: string[] = session.question_ids;
 
     const { data: settings } = await supabase.from("settings").select("*").eq("id", 1).single();
-    if (settings?.enable_attempt_limit) {
+    const { data: classSettings } = await supabase.from("class_settings").select("*").eq("class_id", cls.id).maybeSingle();
+    const effMaxAttempts = classSettings?.max_attempts ?? settings?.max_attempts ?? 3;
+    const effEnableAttemptLimit = classSettings?.enable_attempt_limit ?? settings?.enable_attempt_limit ?? false;
+    if (effEnableAttemptLimit) {
       const { count: attemptCount } = await supabase
         .from("results")
         .select("id", { count: "exact", head: true })
         .eq("student_name", student.full_name)
         .eq("class_name", cls.name)
         .eq("subject_name", subject_name);
-      const maxAttempts = settings.max_attempts ?? 3;
-      if ((attemptCount ?? 0) >= maxAttempts) {
-        return json({ error: "attempt_limit_reached", max_attempts: maxAttempts });
+      if ((attemptCount ?? 0) >= effMaxAttempts) {
+        return json({ error: "attempt_limit_reached", max_attempts: effMaxAttempts });
       }
     }
 

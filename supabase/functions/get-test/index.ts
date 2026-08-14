@@ -58,17 +58,23 @@ Deno.serve(async (req: Request) => {
     if (!subj) return json({ error: "subject_not_found" });
 
     const { data: settings } = await supabase.from("settings").select("*").eq("id", 1).single();
+    const { data: classSettings } = await supabase.from("class_settings").select("*").eq("class_id", cls.id).maybeSingle();
 
-    if (settings?.enable_attempt_limit) {
+    // Sinf uchun alohida sozlama bo'lsa, shu ustuvor — bo'lmasa (null) global settings'dan meros
+    const effQuestionCount = classSettings?.question_count ?? settings?.question_count ?? 15;
+    const effTimeLimit = classSettings?.time_limit_minutes ?? settings?.time_limit_minutes ?? 20;
+    const effMaxAttempts = classSettings?.max_attempts ?? settings?.max_attempts ?? 3;
+    const effEnableAttemptLimit = classSettings?.enable_attempt_limit ?? settings?.enable_attempt_limit ?? false;
+
+    if (effEnableAttemptLimit) {
       const { count: attemptCount } = await supabase
         .from("results")
         .select("id", { count: "exact", head: true })
         .eq("student_name", student.full_name)
         .eq("class_name", cls.name)
         .eq("subject_name", subject_name);
-      const maxAttempts = settings.max_attempts ?? 3;
-      if ((attemptCount ?? 0) >= maxAttempts) {
-        return json({ error: "attempt_limit_reached", max_attempts: maxAttempts });
+      if ((attemptCount ?? 0) >= effMaxAttempts) {
+        return json({ error: "attempt_limit_reached", max_attempts: effMaxAttempts });
       }
     }
 
@@ -79,11 +85,13 @@ Deno.serve(async (req: Request) => {
 
     if (!questions || questions.length === 0) return json({ error: "no_questions" });
 
-    const wanted = Math.max(1, Math.min(count || 15, questions.length));
+    // allow_custom o'chirilgan bo'lsa (faqat global darajada boshqariladi), mijoz yuborgan
+    // sonni e'tiborsiz qoldirib, qat'iy belgilangan savol sonini ishlatamiz.
+    const requestedCount = settings?.allow_custom ? (count || effQuestionCount) : effQuestionCount;
+    const wanted = Math.max(1, Math.min(requestedCount, questions.length));
     const picked = shuffle(questions).slice(0, wanted);
 
-    const timeLimitMin = settings?.time_limit_minutes ?? 20;
-    const expiresAt = new Date(Date.now() + (timeLimitMin + 10) * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + (effTimeLimit + 10) * 60 * 1000).toISOString();
 
     const { data: session, error: sessErr } = await supabase
       .from("test_sessions")
