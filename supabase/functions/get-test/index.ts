@@ -1,8 +1,8 @@
 // get-test — tanlangan fan uchun savollarni TO'G'RI JAVOBSIZ qaytaradi,
 // va agar admin "urinishlar chegarasi"ni yoqqan bo'lsa, uni tekshiradi.
-// Chaqiruvchi kimligi (sinf/ism) mijoz aytgan qiymatdan EMAS, sessiya tokenidan
-// (student_accounts orqali) serverda aniqlanadi — boshqa o'quvchi nomidan
-// test topshirish endi mumkin emas.
+// Chaqiruvchi kimligi endi Supabase Auth JWT orqali emas, o'zimizning
+// custom_sessions bir martalik tokenimiz orqali aniqlanadi (verify_jwt=false —
+// chaqiruvchida haqiqiy Supabase JWT umuman yo'q).
 //
 // Tanlangan savollar bir martalik "test_sessions" biletiga yoziladi — submit-result
 // endi mijoz yuborgan savol ro'yxatiga emas, shu biletga ishonadi.
@@ -37,15 +37,14 @@ Deno.serve(async (req: Request) => {
     const authHeader = req.headers.get("Authorization") || "";
     const token = authHeader.replace(/^Bearer\s+/i, "");
     const url = Deno.env.get("SUPABASE_URL")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-    const authClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
-    const { data: { user } } = await authClient.auth.getUser(token);
-    if (!user) return json({ error: "unauthorized" }, 401);
-
     const supabase = createClient(url, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", user.id).maybeSingle();
+    const { data: session } = await supabase.from("custom_sessions").select("*").eq("id", token).maybeSingle();
+    if (!session || session.role !== "student" || new Date(session.expires_at).getTime() < Date.now()) {
+      return json({ error: "unauthorized" }, 401);
+    }
+
+    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", session.account_id).maybeSingle();
     if (!account) return json({ error: "not_a_student" }, 403);
 
     const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).single();
@@ -60,7 +59,6 @@ Deno.serve(async (req: Request) => {
     const { data: settings } = await supabase.from("settings").select("*").eq("id", 1).single();
     const { data: classSettings } = await supabase.from("class_settings").select("*").eq("class_id", cls.id).maybeSingle();
 
-    // Sinf uchun alohida sozlama bo'lsa, shu ustuvor — bo'lmasa (null) global settings'dan meros
     const effQuestionCount = classSettings?.question_count ?? settings?.question_count ?? 15;
     const effTimeLimit = classSettings?.time_limit_minutes ?? settings?.time_limit_minutes ?? 20;
     const effMaxAttempts = classSettings?.max_attempts ?? settings?.max_attempts ?? 3;
@@ -85,15 +83,13 @@ Deno.serve(async (req: Request) => {
 
     if (!questions || questions.length === 0) return json({ error: "no_questions" });
 
-    // allow_custom o'chirilgan bo'lsa (faqat global darajada boshqariladi), mijoz yuborgan
-    // sonni e'tiborsiz qoldirib, qat'iy belgilangan savol sonini ishlatamiz.
     const requestedCount = settings?.allow_custom ? (count || effQuestionCount) : effQuestionCount;
     const wanted = Math.max(1, Math.min(requestedCount, questions.length));
     const picked = shuffle(questions).slice(0, wanted);
 
     const expiresAt = new Date(Date.now() + (effTimeLimit + 10) * 60 * 1000).toISOString();
 
-    const { data: session, error: sessErr } = await supabase
+    const { data: testSession, error: sessErr } = await supabase
       .from("test_sessions")
       .insert({
         student_id: student.id,
@@ -104,10 +100,10 @@ Deno.serve(async (req: Request) => {
       .select("id")
       .single();
 
-    if (sessErr || !session) return json({ error: "session_create_failed" }, 500);
+    if (sessErr || !testSession) return json({ error: "session_create_failed" }, 500);
 
     return json({
-      session_id: session.id,
+      session_id: testSession.id,
       questions: picked,
       student: { full_name: student.full_name, class_name: cls.name },
     });

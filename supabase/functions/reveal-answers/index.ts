@@ -1,8 +1,7 @@
 // reveal-answers — o'quvchi paroli tekshirilgach, to'g'ri javoblarni qaytaradi.
-// Endi HAQIQIY SESSIYA TOKENI (login qilingan bo'lishi) talab qilinadi va faqat
-// chaqiruvchining O'ZIGA tegishli, allaqachon TOPSHIRILGAN (consumed) test
-// sessiyasining javoblarini qaytaradi — boshqa o'quvchining yoki hali
-// topshirilmagan (demak hali ishlanayotgan) testning javoblarini so'rab bo'lmaydi.
+// Chaqiruvchi kimligi custom_sessions bir martalik tokenimiz orqali aniqlanadi
+// (verify_jwt=false). Faqat chaqiruvchining O'ZIGA tegishli, allaqachon
+// TOPSHIRILGAN (consumed) test sessiyasining javoblarini qaytaradi.
 // Parol app_secrets jadvalida, faqat service_role orqali o'qiladi (qo'shimcha himoya qatlami).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -26,15 +25,14 @@ Deno.serve(async (req: Request) => {
     const authHeader = req.headers.get("Authorization") || "";
     const token = authHeader.replace(/^Bearer\s+/i, "");
     const url = Deno.env.get("SUPABASE_URL")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-    const authClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
-    const { data: { user } } = await authClient.auth.getUser(token);
-    if (!user) return json({ error: "unauthorized" }, 401);
-
     const supabase = createClient(url, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", user.id).maybeSingle();
+    const { data: customSession } = await supabase.from("custom_sessions").select("*").eq("id", token).maybeSingle();
+    if (!customSession || customSession.role !== "student" || new Date(customSession.expires_at).getTime() < Date.now()) {
+      return json({ error: "unauthorized" }, 401);
+    }
+
+    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", customSession.account_id).maybeSingle();
     if (!account) return json({ error: "not_a_student" }, 403);
 
     const { session_id, password } = await req.json();

@@ -1,14 +1,12 @@
 // submit-result — javoblarni SERVERDA baholaydi, natijani bazaga yozadi,
 // va Telegram xabarnomasini yuboradi (bot tokeni faqat shu yerda, service_role orqali).
-// Chaqiruvchi kimligi (sinf/ism) sessiya tokenidan (student_accounts orqali)
-// serverda aniqlanadi, mijoz yuborgan qiymatga ishonilmaydi.
+// Chaqiruvchi kimligi custom_sessions bir martalik tokenimiz orqali aniqlanadi
+// (verify_jwt=false — haqiqiy Supabase JWT yo'q).
 //
 // Savollar ro'yxati ham mijozdan emas, get-test yaratgan bir martalik
 // "test_sessions" biletidan olinadi — bilet faqat shu o'quvchiga tegishli,
 // muddati o'tmagan va hali ishlatilmagan bo'lishi kerak, va faqat bir marta
-// ishlatiladi. Bu identifikatsiya soxtalashtirish, urinishlar chegarasini
-// chetlab o'tish va javoblarni asta-sekin "taxmin qilib topish" hujumlarining
-// oldini oladi.
+// ishlatiladi.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -31,15 +29,14 @@ Deno.serve(async (req: Request) => {
     const authHeader = req.headers.get("Authorization") || "";
     const token = authHeader.replace(/^Bearer\s+/i, "");
     const url = Deno.env.get("SUPABASE_URL")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-    const authClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
-    const { data: { user } } = await authClient.auth.getUser(token);
-    if (!user) return json({ error: "unauthorized" }, 401);
-
     const supabase = createClient(url, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", user.id).maybeSingle();
+    const { data: customSession } = await supabase.from("custom_sessions").select("*").eq("id", token).maybeSingle();
+    if (!customSession || customSession.role !== "student" || new Date(customSession.expires_at).getTime() < Date.now()) {
+      return json({ error: "unauthorized" }, 401);
+    }
+
+    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", customSession.account_id).maybeSingle();
     if (!account) return json({ error: "not_a_student" }, 403);
 
     const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).single();
@@ -118,11 +115,8 @@ Deno.serve(async (req: Request) => {
 
     if (insErr || !inserted) return json({ error: "insert_failed" }, 500);
 
-    // Bilet faqat bir marta ishlatiladi — qayta submit qilishga (yoki javob-taxmin
-    // qilish hujumiga) endi imkon yo'q.
     await supabase.from("test_sessions").update({ consumed_at: new Date().toISOString() }).eq("id", session_id);
 
-    // Telegram xabarnomasi — muvaffaqiyatsiz bo'lsa ham natija allaqachon saqlangan
     try {
       const { data: tgTokenRow } = await supabase.from("app_secrets").select("value").eq("key", "TG_TOKEN").maybeSingle();
       const { data: tgChatRow } = await supabase.from("app_secrets").select("value").eq("key", "TG_CHAT").maybeSingle();
