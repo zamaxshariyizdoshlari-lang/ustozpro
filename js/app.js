@@ -42,14 +42,7 @@ let classesCache = [];   // [{id,name}]
 let allStudents  = [];   // [{id,class_id,full_name}]
 let allSubjects  = [];   // [{id,class_id,name}]
 let adminResults = [];   // [{id,student_name,class_name,subject_name,score,total,percent,cheat_count,elapsed_seconds,created_at}]
-let allQuestions = [];   // questions currently shown in the "Savollar" manage tab
-let editingQuestionId = null; // savol tahrirlash rejimida bo'lsa, tahrirlanayotgan savol id'si
-let teacherQuestions = [];    // o'qituvchi paneli - joriy fan savollari
-let editingTeacherQuestionId = null;
-let teacherQuestionSaveBusy = false;
-let teacherBulkAddBusy = false;
 let teacherResults = [];      // o'qituvchiga RLS orqali ko'rinadigan (faqat o'z fani) natijalar
-let questionSaveBusy = false;
 let classAddBusy = false;
 let studentAddBusy = false;
 let subjectAddBusy = false;
@@ -1170,69 +1163,91 @@ function renderSubjectList() {
 }
 
 /* ═══════════════════════════════════════════════
-   QUESTION MANAGEMENT (admin) — replaces Google Sheets as the source of truth
+   QUESTION MANAGEMENT — admin va o'qituvchi bir xil mantiqni ishlatadi
+   (DOM id prefiksi va fan-filtri orqali cheklangan), Sheets'siz.
+   Format (ommaviy qo'shish): Savol | A | B | C | D | to'g'ri(a/b/c/d) | Izoh
 ═══════════════════════════════════════════════ */
-function onQClassChange() {
-  const clsName=document.getElementById('qClass').value;
-  const qs=document.getElementById('qSubject');
-  qs.innerHTML='<option value="">— Avval sinfni tanlang —</option>';
-  document.getElementById('questionListArea').innerHTML='';
-  document.getElementById('questionCount').innerText='0';
-  cancelEditQuestion();
+const questionCtx = {
+  admin: {
+    ids: { class:'qClass', subject:'qSubject', listArea:'questionListArea', count:'questionCount',
+           text:'newQText', a:'newQA', b:'newQB', c:'newQC', d:'newQD', correct:'newQCorrect', hint:'newQHint',
+           saveBtn:'qSaveBtn', cancelBtn:'qCancelEditBtn', formTitle:'qFormTitle', search:'qSearchInput',
+           bulkText:'bulkQText', bulkBtn:'bulkQBtn', bulkStatus:'bulkQStatusBox' },
+    state: { items:[], editingId:null, visibleCount:50, saveBusy:false, bulkBusy:false },
+    subjectFilter: (subs) => subs,
+    editFnName:'editQuestion', removeFnName:'removeQuestion', showMoreFnName:'showMoreQuestions',
+  },
+  teacher: {
+    ids: { class:'tQClass', subject:'tQSubject', listArea:'tQuestionListArea', count:'tQuestionCount',
+           text:'tNewQText', a:'tNewQA', b:'tNewQB', c:'tNewQC', d:'tNewQD', correct:'tNewQCorrect', hint:'tNewQHint',
+           saveBtn:'tQSaveBtn', cancelBtn:'tQCancelEditBtn', formTitle:'tQFormTitle', search:'tQSearchInput',
+           bulkText:'tBulkQText', bulkBtn:'tBulkQBtn', bulkStatus:'tBulkQStatusBox' },
+    state: { items:[], editingId:null, visibleCount:50, saveBusy:false, bulkBusy:false },
+    subjectFilter: (subs) => subs.filter(s=>teacherSubjects.includes(s.name)),
+    editFnName:'teacherEditQuestion', removeFnName:'teacherRemoveQuestion', showMoreFnName:'showMoreTeacherQuestions',
+  },
+};
+function qOnClassChange(ctx) {
+  const ids = ctx.ids;
+  const clsName = document.getElementById(ids.class).value;
+  const qs = document.getElementById(ids.subject);
+  qs.innerHTML = '<option value="">— Avval sinfni tanlang —</option>';
+  document.getElementById(ids.listArea).innerHTML = '';
+  document.getElementById(ids.count).innerText = '0';
+  qCancelEditQuestion(ctx);
   const cls = classesCache.find(c=>c.name===clsName);
   if (!cls) return;
-  const teacherOnly = teacherLoggedIn && !adminLoggedIn;
-  const opts = teacherOnly ? subjectsForClass(cls.id).filter(s=>teacherSubjects.includes(s.name)) : subjectsForClass(cls.id);
-  qs.innerHTML='<option value="">— Fanni tanlang —</option>'+opts.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  const opts = ctx.subjectFilter(subjectsForClass(cls.id));
+  qs.innerHTML = '<option value="">— Fanni tanlang —</option>'+opts.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
 }
-async function renderQuestionList() {
-  const subjectId=document.getElementById('qSubject')?.value;
-  const area=document.getElementById('questionListArea');
-  cancelEditQuestion();
-  const searchEl=document.getElementById('qSearchInput'); if (searchEl) searchEl.value='';
-  if (!subjectId) { area.innerHTML=''; document.getElementById('questionCount').innerText='0'; allQuestions=[]; return; }
+async function qRenderQuestionList(ctx) {
+  const ids = ctx.ids;
+  const subjectId = document.getElementById(ids.subject)?.value;
+  const area = document.getElementById(ids.listArea);
+  qCancelEditQuestion(ctx);
+  const searchEl = document.getElementById(ids.search); if (searchEl) searchEl.value='';
+  if (!subjectId) { area.innerHTML=''; document.getElementById(ids.count).innerText='0'; ctx.state.items=[]; return; }
   const { data, error } = await supabaseClient.from('questions').select('*').eq('subject_id', subjectId).order('created_at');
   if (error) { area.innerHTML=`<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
-  allQuestions = data||[];
-  renderFilteredQuestions();
+  ctx.state.items = data||[];
+  qRenderFilteredQuestions(ctx);
 }
-let questionsVisibleCount = 50;
-function renderFilteredQuestions(resetPage=true) {
-  if (resetPage) questionsVisibleCount = 50;
-  const area=document.getElementById('questionListArea');
-  const term=(document.getElementById('qSearchInput')?.value||'').trim().toLowerCase();
-  document.getElementById('questionCount').innerText=allQuestions.length;
-  const list = term ? allQuestions.filter(q=>q.question_text.toLowerCase().includes(term)) : allQuestions;
-  if (list.length===0) { area.innerHTML=`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`; return; }
-  const visible = list.slice(0, questionsVisibleCount);
-  area.innerHTML=visible.map(q=>`<div class="list-item ${editingQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="editQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="removeQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('') + loadMoreDivHtml(list.length, questionsVisibleCount, 'showMoreQuestions');
+function qRenderFilteredQuestions(ctx, resetPage=true) {
+  if (resetPage) ctx.state.visibleCount = 50;
+  const ids = ctx.ids;
+  const area = document.getElementById(ids.listArea);
+  const term = (document.getElementById(ids.search)?.value||'').trim().toLowerCase();
+  document.getElementById(ids.count).innerText = ctx.state.items.length;
+  const list = term ? ctx.state.items.filter(q=>q.question_text.toLowerCase().includes(term)) : ctx.state.items;
+  if (list.length===0) { area.innerHTML = `<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`; return; }
+  const visible = list.slice(0, ctx.state.visibleCount);
+  area.innerHTML = visible.map(q=>`<div class="list-item ${ctx.state.editingId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="${ctx.editFnName}('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="${ctx.removeFnName}('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('') + loadMoreDivHtml(list.length, ctx.state.visibleCount, ctx.showMoreFnName);
 }
-function showMoreQuestions() { questionsVisibleCount += 50; renderFilteredQuestions(false); }
-function editQuestion(id) {
-  const q = allQuestions.find(x=>x.id===id);
+function qEditQuestion(ctx, id) {
+  const q = ctx.state.items.find(x=>x.id===id);
   if (!q) return;
-  editingQuestionId = id;
-  document.getElementById('newQText').value = q.question_text||'';
-  document.getElementById('newQA').value = q.option_a||'';
-  document.getElementById('newQB').value = q.option_b||'';
-  document.getElementById('newQC').value = q.option_c||'';
-  document.getElementById('newQD').value = q.option_d||'';
-  document.getElementById('newQCorrect').value = q.correct_option||'a';
-  document.getElementById('newQHint').value = q.hint||'';
-  updateQuestionFormMode();
-  document.getElementById('newQText').scrollIntoView({behavior:'smooth',block:'center'});
-  renderFilteredQuestions();
+  ctx.state.editingId = id;
+  document.getElementById(ctx.ids.text).value = q.question_text||'';
+  document.getElementById(ctx.ids.a).value = q.option_a||'';
+  document.getElementById(ctx.ids.b).value = q.option_b||'';
+  document.getElementById(ctx.ids.c).value = q.option_c||'';
+  document.getElementById(ctx.ids.d).value = q.option_d||'';
+  document.getElementById(ctx.ids.correct).value = q.correct_option||'a';
+  document.getElementById(ctx.ids.hint).value = q.hint||'';
+  qUpdateFormMode(ctx);
+  document.getElementById(ctx.ids.text).scrollIntoView({behavior:'smooth',block:'center'});
+  qRenderFilteredQuestions(ctx, false);
 }
-function cancelEditQuestion() {
-  if (!editingQuestionId) return;
-  editingQuestionId = null;
-  ['newQText','newQA','newQB','newQC','newQD','newQHint'].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
-  const correctEl=document.getElementById('newQCorrect'); if (correctEl) correctEl.value='a';
-  updateQuestionFormMode();
+function qCancelEditQuestion(ctx) {
+  if (!ctx.state.editingId) return;
+  ctx.state.editingId = null;
+  [ctx.ids.text,ctx.ids.a,ctx.ids.b,ctx.ids.c,ctx.ids.d,ctx.ids.hint].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
+  const correctEl=document.getElementById(ctx.ids.correct); if (correctEl) correctEl.value='a';
+  qUpdateFormMode(ctx);
 }
-function updateQuestionFormMode() {
-  const btn=document.getElementById('qSaveBtn'), cancelBtn=document.getElementById('qCancelEditBtn'), title=document.getElementById('qFormTitle');
-  if (editingQuestionId) {
+function qUpdateFormMode(ctx) {
+  const btn=document.getElementById(ctx.ids.saveBtn), cancelBtn=document.getElementById(ctx.ids.cancelBtn), title=document.getElementById(ctx.ids.formTitle);
+  if (ctx.state.editingId) {
     if (btn) btn.innerText='💾 Yangilash';
     if (cancelBtn) cancelBtn.style.display='';
     if (title) title.innerText='Savolni tahrirlash';
@@ -1242,55 +1257,49 @@ function updateQuestionFormMode() {
     if (title) title.innerText="Savol qo'shish";
   }
 }
-async function saveQuestion() {
-  if (questionSaveBusy) return;
-  const subjectId=document.getElementById('qSubject')?.value;
-  const text=document.getElementById('newQText').value.trim();
-  const a=document.getElementById('newQA').value.trim();
-  const b=document.getElementById('newQB').value.trim();
-  const c=document.getElementById('newQC').value.trim();
-  const d=document.getElementById('newQD').value.trim();
-  const correct=document.getElementById('newQCorrect').value;
-  const hint=document.getElementById('newQHint').value.trim();
+async function qSaveQuestion(ctx) {
+  if (ctx.state.saveBusy) return;
+  const subjectId=document.getElementById(ctx.ids.subject)?.value;
+  const text=document.getElementById(ctx.ids.text).value.trim();
+  const a=document.getElementById(ctx.ids.a).value.trim();
+  const b=document.getElementById(ctx.ids.b).value.trim();
+  const c=document.getElementById(ctx.ids.c).value.trim();
+  const d=document.getElementById(ctx.ids.d).value.trim();
+  const correct=document.getElementById(ctx.ids.correct).value;
+  const hint=document.getElementById(ctx.ids.hint).value.trim();
   if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
   if (!text||!a||!b) { showToast('⚠️','Savol matni va kamida A/B variantlarini kiriting!','warning'); return; }
-  questionSaveBusy = true;
-  const btn=document.getElementById('qSaveBtn'); if (btn) btn.disabled=true;
+  ctx.state.saveBusy = true;
+  const btn=document.getElementById(ctx.ids.saveBtn); if (btn) btn.disabled=true;
   const payload = { subject_id: subjectId, question_text: text, option_a:a, option_b:b, option_c:c, option_d:d, correct_option: correct, hint };
-  const wasEdit = !!editingQuestionId;
+  const wasEdit = !!ctx.state.editingId;
   const { error } = wasEdit
-    ? await supabaseClient.from('questions').update(payload).eq('id', editingQuestionId)
+    ? await supabaseClient.from('questions').update(payload).eq('id', ctx.state.editingId)
     : await supabaseClient.from('questions').insert(payload);
-  questionSaveBusy = false; if (btn) btn.disabled=false;
+  ctx.state.saveBusy = false; if (btn) btn.disabled=false;
   if (error) { showToast('❌','Saqlashda xatolik','error'); return; }
-  editingQuestionId = null;
-  ['newQText','newQA','newQB','newQC','newQD','newQHint'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('newQCorrect').value='a';
-  updateQuestionFormMode();
-  await renderQuestionList();
+  ctx.state.editingId = null;
+  [ctx.ids.text,ctx.ids.a,ctx.ids.b,ctx.ids.c,ctx.ids.d,ctx.ids.hint].forEach(id=>document.getElementById(id).value='');
+  document.getElementById(ctx.ids.correct).value='a';
+  qUpdateFormMode(ctx);
+  await qRenderQuestionList(ctx);
   showToast('✅', wasEdit?'Savol yangilandi!':'Savol qo\'shildi!','success');
 }
-async function removeQuestion(id) {
-  const q = allQuestions.find(x=>x.id===id);
+async function qRemoveQuestion(ctx, id) {
+  const q = ctx.state.items.find(x=>x.id===id);
   const preview = q ? (q.question_text.length>50 ? q.question_text.slice(0,50)+'…' : q.question_text) : '';
   const ok = await askTypeConfirm('Savolni o\'chirish', `"${preview}" savoli butunlay o'chadi.`, 'OCHIRISH');
   if (!ok) return;
   const { error } = await supabaseClient.from('questions').delete().eq('id', id);
   if (error) { showToast('❌','Xatolik','error'); return; }
-  if (editingQuestionId===id) cancelEditQuestion();
-  await renderQuestionList();
+  if (ctx.state.editingId===id) qCancelEditQuestion(ctx);
+  await qRenderQuestionList(ctx);
   showToast('🗑️','Savol o\'chirildi.','info');
 }
-
-/* ═══════════════════════════════════════════════
-   BULK ADD QUESTIONS — Sheets'siz, matn orqali ommaviy kiritish
-   Format: Savol | A | B | C | D | to'g'ri(a/b/c/d) | Izoh
-═══════════════════════════════════════════════ */
-let bulkAddBusy = false;
-async function bulkAddQuestions() {
-  if (bulkAddBusy) return;
-  const subjectId=document.getElementById('qSubject')?.value;
-  const raw = document.getElementById('bulkQText').value;
+async function qBulkAddQuestions(ctx) {
+  if (ctx.state.bulkBusy) return;
+  const subjectId=document.getElementById(ctx.ids.subject)?.value;
+  const raw = document.getElementById(ctx.ids.bulkText).value;
   if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
   const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
   if (lines.length===0) { showToast('⚠️','Matn bo\'sh!','warning'); return; }
@@ -1309,180 +1318,48 @@ async function bulkAddQuestions() {
     });
   });
 
-  const box=document.getElementById('bulkQStatusBox');
+  const box=document.getElementById(ctx.ids.bulkStatus);
   if (rows.length===0) {
     if (box) { box.style.display='block'; box.innerHTML=`<div style="padding:13px;background:var(--danger-pale);border:1px solid rgba(220,38,38,0.2);border-radius:var(--r-sm);font-size:12px;color:#991b1b">❌ To'g'ri formatdagi qator topilmadi. Format: Savol | A | B | C | D | to'g'ri(a/b/c/d) | Izoh</div>`; }
     return;
   }
 
-  bulkAddBusy = true;
-  const btn=document.getElementById('bulkQBtn'); if (btn) btn.disabled=true;
+  ctx.state.bulkBusy = true;
+  const btn=document.getElementById(ctx.ids.bulkBtn); if (btn) btn.disabled=true;
   const { error } = await supabaseClient.from('questions').insert(rows);
-  bulkAddBusy = false; if (btn) btn.disabled=false;
+  ctx.state.bulkBusy = false; if (btn) btn.disabled=false;
 
   if (error) { showToast('❌','Saqlashda xatolik yuz berdi','error'); return; }
-  document.getElementById('bulkQText').value='';
+  document.getElementById(ctx.ids.bulkText).value='';
   if (box) {
     box.style.display='block';
     box.innerHTML=`<div style="padding:13px;background:var(--success-pale);border:1px solid rgba(5,150,105,0.2);border-radius:var(--r-sm);font-size:12px;color:#065f46">✅ <b>${rows.length}</b> ta savol qo'shildi${badLines.length?`, ${badLines.length} ta qator (${badLines.join(', ')}-qator) noto'g'ri formatda bo'lgani uchun o'tkazib yuborildi`:''}.</div>`;
   }
-  await renderQuestionList();
+  await qRenderQuestionList(ctx);
   showToast('✅','Ommaviy qo\'shish tugadi!','success',`${rows.length} ta savol qo'shildi`);
 }
 
-/* ═══════════════════════════════════════════════
-   QUESTION MANAGEMENT (teacher) — screen-teacher, faqat o'z fani
-═══════════════════════════════════════════════ */
-function teacherOnQClassChange() {
-  const clsName=document.getElementById('tQClass').value;
-  const qs=document.getElementById('tQSubject');
-  qs.innerHTML='<option value="">— Avval sinfni tanlang —</option>';
-  document.getElementById('tQuestionListArea').innerHTML='';
-  document.getElementById('tQuestionCount').innerText='0';
-  teacherCancelEditQuestion();
-  const cls = classesCache.find(c=>c.name===clsName);
-  if (!cls) return;
-  const opts = subjectsForClass(cls.id).filter(s=>teacherSubjects.includes(s.name));
-  qs.innerHTML='<option value="">— Fanni tanlang —</option>'+opts.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
-}
-async function teacherRenderQuestionList() {
-  const subjectId=document.getElementById('tQSubject')?.value;
-  const area=document.getElementById('tQuestionListArea');
-  teacherCancelEditQuestion();
-  const searchEl=document.getElementById('tQSearchInput'); if (searchEl) searchEl.value='';
-  if (!subjectId) { area.innerHTML=''; document.getElementById('tQuestionCount').innerText='0'; teacherQuestions=[]; return; }
-  const { data, error } = await supabaseClient.from('questions').select('*').eq('subject_id', subjectId).order('created_at');
-  if (error) { area.innerHTML=`<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
-  teacherQuestions = data||[];
-  teacherRenderFilteredQuestions();
-}
-let teacherQuestionsVisibleCount = 50;
-function teacherRenderFilteredQuestions(resetPage=true) {
-  if (resetPage) teacherQuestionsVisibleCount = 50;
-  const area=document.getElementById('tQuestionListArea');
-  const term=(document.getElementById('tQSearchInput')?.value||'').trim().toLowerCase();
-  document.getElementById('tQuestionCount').innerText=teacherQuestions.length;
-  const list = term ? teacherQuestions.filter(q=>q.question_text.toLowerCase().includes(term)) : teacherQuestions;
-  if (list.length===0) { area.innerHTML=`<div class="empty-state">${term?'Qidiruv bo\'yicha savol topilmadi.':'Bu fan uchun savollar yo\'q.'}</div>`; return; }
-  const visible = list.slice(0, teacherQuestionsVisibleCount);
-  area.innerHTML=visible.map(q=>`<div class="list-item ${editingTeacherQuestionId===q.id?'bookmarked-card':''}"><div class="li-icon">❓</div><span class="li-text">${esc(q.question_text)} <b style="color:var(--success)">[${q.correct_option.toUpperCase()}]</b></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="teacherEditQuestion('${q.id}')" title="Tahrirlash">✏️</button><button class="li-del" onclick="teacherRemoveQuestion('${q.id}')" title="O'chirish">🗑️</button></div></div>`).join('') + loadMoreDivHtml(list.length, teacherQuestionsVisibleCount, 'showMoreTeacherQuestions');
-}
-function showMoreTeacherQuestions() { teacherQuestionsVisibleCount += 50; teacherRenderFilteredQuestions(false); }
-function teacherEditQuestion(id) {
-  const q = teacherQuestions.find(x=>x.id===id);
-  if (!q) return;
-  editingTeacherQuestionId = id;
-  document.getElementById('tNewQText').value = q.question_text||'';
-  document.getElementById('tNewQA').value = q.option_a||'';
-  document.getElementById('tNewQB').value = q.option_b||'';
-  document.getElementById('tNewQC').value = q.option_c||'';
-  document.getElementById('tNewQD').value = q.option_d||'';
-  document.getElementById('tNewQCorrect').value = q.correct_option||'a';
-  document.getElementById('tNewQHint').value = q.hint||'';
-  teacherUpdateQuestionFormMode();
-  document.getElementById('tNewQText').scrollIntoView({behavior:'smooth',block:'center'});
-  teacherRenderFilteredQuestions();
-}
-function teacherCancelEditQuestion() {
-  if (!editingTeacherQuestionId) return;
-  editingTeacherQuestionId = null;
-  ['tNewQText','tNewQA','tNewQB','tNewQC','tNewQD','tNewQHint'].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
-  const correctEl=document.getElementById('tNewQCorrect'); if (correctEl) correctEl.value='a';
-  teacherUpdateQuestionFormMode();
-}
-function teacherUpdateQuestionFormMode() {
-  const btn=document.getElementById('tQSaveBtn'), cancelBtn=document.getElementById('tQCancelEditBtn'), title=document.getElementById('tQFormTitle');
-  if (editingTeacherQuestionId) {
-    if (btn) btn.innerText='💾 Yangilash';
-    if (cancelBtn) cancelBtn.style.display='';
-    if (title) title.innerText='Savolni tahrirlash';
-  } else {
-    if (btn) btn.innerText="+ Savol qo'shish";
-    if (cancelBtn) cancelBtn.style.display='none';
-    if (title) title.innerText="Savol qo'shish";
-  }
-}
-async function teacherSaveQuestion() {
-  if (teacherQuestionSaveBusy) return;
-  const subjectId=document.getElementById('tQSubject')?.value;
-  const text=document.getElementById('tNewQText').value.trim();
-  const a=document.getElementById('tNewQA').value.trim();
-  const b=document.getElementById('tNewQB').value.trim();
-  const c=document.getElementById('tNewQC').value.trim();
-  const d=document.getElementById('tNewQD').value.trim();
-  const correct=document.getElementById('tNewQCorrect').value;
-  const hint=document.getElementById('tNewQHint').value.trim();
-  if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
-  if (!text||!a||!b) { showToast('⚠️','Savol matni va kamida A/B variantlarini kiriting!','warning'); return; }
-  teacherQuestionSaveBusy = true;
-  const btn=document.getElementById('tQSaveBtn'); if (btn) btn.disabled=true;
-  const payload = { subject_id: subjectId, question_text: text, option_a:a, option_b:b, option_c:c, option_d:d, correct_option: correct, hint };
-  const wasEdit = !!editingTeacherQuestionId;
-  const { error } = wasEdit
-    ? await supabaseClient.from('questions').update(payload).eq('id', editingTeacherQuestionId)
-    : await supabaseClient.from('questions').insert(payload);
-  teacherQuestionSaveBusy = false; if (btn) btn.disabled=false;
-  if (error) { showToast('❌','Saqlashda xatolik','error'); return; }
-  editingTeacherQuestionId = null;
-  ['tNewQText','tNewQA','tNewQB','tNewQC','tNewQD','tNewQHint'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('tNewQCorrect').value='a';
-  teacherUpdateQuestionFormMode();
-  await teacherRenderQuestionList();
-  showToast('✅', wasEdit?'Savol yangilandi!':'Savol qo\'shildi!','success');
-}
-async function teacherRemoveQuestion(id) {
-  const q = teacherQuestions.find(x=>x.id===id);
-  const preview = q ? (q.question_text.length>50 ? q.question_text.slice(0,50)+'…' : q.question_text) : '';
-  const ok = await askTypeConfirm('Savolni o\'chirish', `"${preview}" savoli butunlay o'chadi.`, 'OCHIRISH');
-  if (!ok) return;
-  const { error } = await supabaseClient.from('questions').delete().eq('id', id);
-  if (error) { showToast('❌','Xatolik','error'); return; }
-  if (editingTeacherQuestionId===id) teacherCancelEditQuestion();
-  await teacherRenderQuestionList();
-  showToast('🗑️','Savol o\'chirildi.','info');
-}
-async function teacherBulkAddQuestions() {
-  if (teacherBulkAddBusy) return;
-  const subjectId=document.getElementById('tQSubject')?.value;
-  const raw = document.getElementById('tBulkQText').value;
-  if (!subjectId) { showToast('⚠️','Avval sinf va fanni tanlang!','warning'); return; }
-  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
-  if (lines.length===0) { showToast('⚠️','Matn bo\'sh!','warning'); return; }
-
-  const rows = [];
-  const badLines = [];
-  lines.forEach((line,idx)=>{
-    const parts = line.split('|').map(p=>p.trim());
-    if (parts.length<6) { badLines.push(idx+1); return; }
-    const [q,a,b,c,d,cr,...hintParts] = parts;
-    const correct = (cr||'').toLowerCase();
-    if (!q||!a||!b||!['a','b','c','d'].includes(correct)) { badLines.push(idx+1); return; }
-    rows.push({
-      subject_id: subjectId, question_text:q, option_a:a, option_b:b, option_c:c||'', option_d:d||'',
-      correct_option:correct, hint:hintParts.join('|').trim()
-    });
-  });
-
-  const box=document.getElementById('tBulkQStatusBox');
-  if (rows.length===0) {
-    if (box) { box.style.display='block'; box.innerHTML=`<div style="padding:13px;background:var(--danger-pale);border:1px solid rgba(220,38,38,0.2);border-radius:var(--r-sm);font-size:12px;color:#991b1b">❌ To'g'ri formatdagi qator topilmadi. Format: Savol | A | B | C | D | to'g'ri(a/b/c/d) | Izoh</div>`; }
-    return;
-  }
-
-  teacherBulkAddBusy = true;
-  const btn=document.getElementById('tBulkQBtn'); if (btn) btn.disabled=true;
-  const { error } = await supabaseClient.from('questions').insert(rows);
-  teacherBulkAddBusy = false; if (btn) btn.disabled=false;
-
-  if (error) { showToast('❌','Saqlashda xatolik yuz berdi','error'); return; }
-  document.getElementById('tBulkQText').value='';
-  if (box) {
-    box.style.display='block';
-    box.innerHTML=`<div style="padding:13px;background:var(--success-pale);border:1px solid rgba(5,150,105,0.2);border-radius:var(--r-sm);font-size:12px;color:#065f46">✅ <b>${rows.length}</b> ta savol qo'shildi${badLines.length?`, ${badLines.length} ta qator (${badLines.join(', ')}-qator) noto'g'ri formatda bo'lgani uchun o'tkazib yuborildi`:''}.</div>`;
-  }
-  await teacherRenderQuestionList();
-  showToast('✅','Ommaviy qo\'shish tugadi!','success',`${rows.length} ta savol qo'shildi`);
-}
+// Ingichka global qobiqlar — HTML onclick="..." atributlari ularni nomi bo'yicha chaqiradi
+function onQClassChange() { qOnClassChange(questionCtx.admin); }
+function teacherOnQClassChange() { qOnClassChange(questionCtx.teacher); }
+async function renderQuestionList() { await qRenderQuestionList(questionCtx.admin); }
+async function teacherRenderQuestionList() { await qRenderQuestionList(questionCtx.teacher); }
+function renderFilteredQuestions(resetPage=true) { qRenderFilteredQuestions(questionCtx.admin, resetPage); }
+function teacherRenderFilteredQuestions(resetPage=true) { qRenderFilteredQuestions(questionCtx.teacher, resetPage); }
+function showMoreQuestions() { questionCtx.admin.state.visibleCount += 50; qRenderFilteredQuestions(questionCtx.admin, false); }
+function showMoreTeacherQuestions() { questionCtx.teacher.state.visibleCount += 50; qRenderFilteredQuestions(questionCtx.teacher, false); }
+function editQuestion(id) { qEditQuestion(questionCtx.admin, id); }
+function teacherEditQuestion(id) { qEditQuestion(questionCtx.teacher, id); }
+function cancelEditQuestion() { qCancelEditQuestion(questionCtx.admin); }
+function teacherCancelEditQuestion() { qCancelEditQuestion(questionCtx.teacher); }
+function updateQuestionFormMode() { qUpdateFormMode(questionCtx.admin); }
+function teacherUpdateQuestionFormMode() { qUpdateFormMode(questionCtx.teacher); }
+async function saveQuestion() { await qSaveQuestion(questionCtx.admin); }
+async function teacherSaveQuestion() { await qSaveQuestion(questionCtx.teacher); }
+async function removeQuestion(id) { await qRemoveQuestion(questionCtx.admin, id); }
+async function teacherRemoveQuestion(id) { await qRemoveQuestion(questionCtx.teacher, id); }
+async function bulkAddQuestions() { await qBulkAddQuestions(questionCtx.admin); }
+async function teacherBulkAddQuestions() { await qBulkAddQuestions(questionCtx.teacher); }
 
 /* ═══════════════════════════════════════════════
    RESULTS TABLE (teacher) — RLS orqali faqat o'z faniga cheklangan
