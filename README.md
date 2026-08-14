@@ -5,12 +5,12 @@ Zamaxshariy Izdoshlari Maktabi uchun o'quvchilarni test qilish, natijalarni saql
 ## Arxitektura
 
 - **Frontend**: statik sayt, hech qanday build qadam kerak emas.
-- **Baza**: Supabase Postgres — `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets`, `teachers`, `teacher_subjects`, `student_accounts` jadvallari, barchasi Row Level Security bilan himoyalangan. Sxema `supabase/migrations/` papkasida versiyalangan.
-- **Auth**: Supabase Auth (email/parol) — **uchta rol**, hammasi bitta login darvozasidan kiradi va **avtomatik o'z paneliga yo'naltiriladi**: bitta **super-admin** (`is_admin()` orqali, hammasini boshqaradi), istalgan sondagi **o'qituvchi**lar (`teachers`/`teacher_subjects` orqali, faqat o'z fan(lar)i bilan cheklangan) va barcha **o'quvchi**lar (`student_accounts` orqali, faqat o'z natijalari/reytingi bilan cheklangan). Uch rol ham to'liq alohida ekranlarda ishlaydi (`screen-admin`/`screen-manage`, `screen-teacher`, `screen-student`) — bitta umumiy ekran yo'q.
+- **Baza**: Supabase Postgres — `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `class_settings`, `app_secrets`, `teachers`, `teacher_subjects`, `student_accounts`, `admin_accounts`, `test_sessions`, `audit_log` jadvallari, barchasi Row Level Security bilan himoyalangan. Sxema `supabase/migrations/` papkasida versiyalangan.
+- **Auth**: Supabase Auth (email/parol) — **uchta rol**, hammasi bitta login darvozasidan kiradi va **avtomatik o'z paneliga yo'naltiriladi**: istalgan sondagi **admin**lar (`admin_accounts` orqali, hammasini boshqaradi), istalgan sondagi **o'qituvchi**lar (`teachers`/`teacher_subjects` orqali, faqat o'z fan(lar)i bilan cheklangan) va barcha **o'quvchi**lar (`student_accounts` orqali, faqat o'z natijalari/reytingi bilan cheklangan). Uch rol ham to'liq alohida ekranlarda ishlaydi (`screen-admin`/`screen-manage`, `screen-teacher`, `screen-student`) — bitta umumiy ekran yo'q.
 - **Edge Functions** (`supabase/functions/` — bu repoda ham saqlanadi, Supabase loyihasiga alohida deploy qilinadi):
-  - `get-test` — tanlangan fan uchun savollarni **to'g'ri javobsiz** qaytaradi; o'quvchini chaqiruvchining **haqiqiy sessiya tokeni** orqali aniqlaydi (mijoz yuborgan ism/sinfga ishonmaydi).
-  - `submit-result` — javoblarni serverda baholaydi, natijani bazaga yozadi, Telegram xabarnomasini yuboradi (bot tokeni faqat serverda); `student_name`/`class_name`ni ham mijozdan emas, token orqali aniqlangan hisobdan oladi.
-  - `reveal-answers` — o'qituvchi paroli tekshirilgach, to'g'ri javoblarni qaytaradi.
+  - `get-test` — tanlangan fan uchun savollarni **to'g'ri javobsiz** qaytaradi; o'quvchini chaqiruvchining **haqiqiy sessiya tokeni** orqali aniqlaydi (mijoz yuborgan ism/sinfga ishonmaydi). Tanlangan savollarni bir martalik `test_sessions` biletiga yozadi.
+  - `submit-result` — javoblarni serverda baholaydi, natijani bazaga yozadi, Telegram xabarnomasini yuboradi (bot tokeni faqat serverda). Endi `question_ids`/`subject_name`ni mijozdan emas, `get-test` yaratgan bir martalik sessiya biletidan oladi — bilet bir marta ishlatiladi va faqat egasiga tegishli.
+  - `reveal-answers` — endi haqiqiy sessiya tokeni talab qiladi, faqat chaqiruvchining o'ziga tegishli va allaqachon topshirilgan sessiyaning javoblarini qaytaradi (parol qo'shimcha himoya qatlami sifatida qoladi).
 - **Reyting hisob-kitobi** (`get_monthly_rating`, `get_mutolaa_rating`, `get_rating_formula_info`, `get_my_rating`) — Postgres RPC funksiyalari sifatida serverda hisoblanadi (admin panel butun natijalar jadvalini brauzerga tortib olib client'da hisoblamaydi; o'quvchi esa faqat `get_my_rating()` orqali o'zining o'rnini ko'radi, boshqalarning ismini emas).
 
 > ⚠️ **Eslatma**: `supabase/migrations/` da o'quvchi/sinf/fan **seed (namunaviy) ma'lumotlari yo'q** — chunki bu repo public, va haqiqiy o'quvchi ismlari (F.I.Sh.) shaxsiy ma'lumot hisoblanadi. Ular faqat Supabase bazasida saqlanadi, GitHub'ga hech qachon yuklanmaydi.
@@ -52,7 +52,7 @@ Keyin brauzerda: `http://localhost:8080`
 
 ## Backendni birinchi marta sozlash (yangi Supabase loyihasida)
 
-1. `supabase/migrations` orqali quyidagi jadvallarni yarating: `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `app_secrets`, `teachers`, `teacher_subjects`, `student_accounts` — barchasida RLS yoqilgan; `questions`/`results` admin YOKI shu fanning o'qituvchisiga ochiq (`can_manage_subject()`/`is_teacher_for_subject()`), qolganlari `app_secrets`/`teachers`/`teacher_subjects`/`student_accounts` kabi anon/authenticated uchun umuman yopiq (faqat RPC orqali). Anonim (login qilmagan) foydalanuvchi hech narsani o'qiy olmaydi — `classes`/`subjects`/`students`/`settings` ham `auth.uid() is not null` bilan cheklangan.
+1. `supabase/migrations` orqali quyidagi jadvallarni yarating: `classes`, `students`, `subjects`, `questions`, `results`, `settings`, `class_settings`, `app_secrets`, `teachers`, `teacher_subjects`, `student_accounts`, `admin_accounts`, `test_sessions`, `audit_log` — barchasida RLS yoqilgan; `questions`/`results` admin YOKI shu fanning o'qituvchisiga ochiq (`can_manage_subject()`/`is_teacher_for_subject()`), qolganlari `app_secrets`/`teachers`/`teacher_subjects`/`student_accounts`/`admin_accounts`/`test_sessions` kabi anon/authenticated uchun umuman yopiq (faqat RPC yoki service_role orqali), `audit_log` faqat admin o'qiy oladi. Anonim (login qilmagan) foydalanuvchi hech narsani o'qiy olmaydi — `classes`/`subjects`/`students`/`settings` ham `auth.uid() is not null` bilan cheklangan.
 2. `app_secrets` jadvaliga `TG_TOKEN`, `TG_CHAT`, `ANSWER_PASS` qiymatlarini kiriting (faqat Edge Function'lar `service_role` orqali o'qiy oladi).
 3. Supabase Auth'da bitta admin foydalanuvchi yarating, uning UUID'sini `is_admin()` funksiyasiga yozing.
 4. `get-test`, `submit-result`, `reveal-answers` Edge Function'larini deploy qiling.
@@ -97,15 +97,30 @@ Bitta super-admin (`ustozpro@ustozpro.local`) dan tashqari, admin panel orqali *
 - **Panelda mavjud**: faqat o'z fani(lar)i bo'yicha savol qo'shish/tahrirlash/o'chirish (bitta-bitta yoki ommaviy matn orqali), faqat o'z fani natijalari jadvali (endi **o'chirish tugmasi bilan** — avval faqat admin o'chira olardi), va parolni almashtirish.
 - **Haqiqiy xavfsizlik chegarasi — RLS, UI emas**: `questions` va `results` jadvallaridagi RLS siyosatlari `can_manage_subject()`/`is_teacher_for_subject()` funksiyalari orqali fan bo'yicha cheklangan — UI cheklovini devtools orqali chetlab o'tishga urinilsa ham (masalan boshqa fanga savol qo'shishga urinish), Postgres so'rovni to'g'ridan-to'g'ri rad etadi (`42501` xatosi, jonli sinovda tasdiqlangan). Reyting RPC'lari (`get_monthly_rating` va h.k.) ham DB darajasida faqat haqiqiy super-adminga qaytaradi, chunki ular butun sinf bo'yicha jamlangan ma'lumotni ko'rsatadi.
 
+## Ko'p-adminlik va audit jurnali
+
+`is_admin()` endi bitta qattiq kodlangan UUID emas, `admin_accounts` jadvalidan tekshiradi — Boshqarish → Adminlar bo'limidan ikkinchi (zaxira) admin qo'shish mumkin (`admin_create_admin` RPC). O'zini-o'zi o'chirish va oxirgi qolgan adminni o'chirish taqiqlangan (`admin_delete_admin` ichida tekshiriladi) — hech qachon adminsiz qolib ketmaslik uchun.
+
+Muhim harakatlar (hisob yaratish/o'chirish, parol tiklash, sinf/o'quvchi/fan o'chirish, barcha natijalarni tozalash) `audit_log` jadvaliga yoziladi (`_log_action()` ichki yordamchisi orqali, faqat admin o'qiy oladi) va Boshqarish → Adminlar → "Audit jurnali"da so'nggi 200 yozuv sifatida ko'rinadi.
+
+## Sinf darajasidagi sozlamalar
+
+Global "Test sozlamalari" (savol soni, vaqt, urinishlar chegarasi) endi `class_settings` jadvali orqali bitta sinf uchun ustunlik bilan almashtirilishi mumkin — Admin panel → Sozlamalar → "Sinf uchun maxsus sozlamalar"da sinfni tanlab, faqat kerakli maydonlarni to'ldirasiz (bo'sh qoldirilgan maydonlar global sozlamadan meros oladi). `get-test`/`submit-result` shu ustuvorlikni serverda ham qo'llaydi — UI'da ko'rsatilgan qiymat bilan haqiqatda enforce qilingan qiymat har doim bir xil.
+
+## Birinchi kirishda majburiy parol almashtirish
+
+Admin yaratgan (yoki tiklagan) har bir o'quvchi/o'qituvchi hisobi `must_change_password = true` bilan boshlanadi. Shu holatda kirilganda panelning faqat "Parolni almashtirish" bo'limi ko'rinadi — qolgan hamma narsa (test boshlash, savol boshqaruvi, natijalar) parol almashtirilmaguncha yashiringan. Parol muvaffaqiyatli almashtirilgach (`mark_password_changed()` RPC) panel to'liq ochiladi.
+
 ## Xavfsizlik
 
 - Anonim (login qilmagan) foydalanuvchi hech narsani o'qiy olmaydi — `classes`/`subjects`/`students`/`settings`/`questions`/`results` barchasi `auth.uid() is not null` yoki fan/egalik bo'yicha cheklangan. Anonim test topshirish umuman yo'q.
 - `questions.correct_option` va `results` jadvallari anon foydalanuvchiga hech qachon to'g'ridan-to'g'ri REST orqali ko'rinmaydi (RLS bilan tekshirilgan).
 - Test paytida savollar `get-test` orqali **to'g'ri javobsiz** yuboriladi; baholash `submit-result`da serverda amalga oshadi.
-- **`get-test`/`submit-result` mijoz yuborgan identifikatsiyaga ishonmaydi**: har ikkalasi ham chaqiruvchining `Authorization` sarlavhasidagi haqiqiy sessiya tokenini `supabase.auth.getUser()` bilan tekshirib, `student_accounts` orqali haqiqiy ism/sinfni serverda o'zi aniqlaydi — mijoz boshqa ism/sinf yuborsa ham e'tiborga olinmaydi.
+- **Bir martalik test-sessiyasi (`test_sessions`)**: `get-test` tanlagan savollarni serverda "bilet" sifatida saqlaydi; `submit-result` faqat shu biletga (mijoz yuborgan savol ro'yxatiga emas) ishonadi va uni bir marta ishlatadi. Bu uchta muammoni yopadi: (1) identifikatsiya soxtalashtirish, (2) `enable_attempt_limit` yoqilgan bo'lsa ham `submit-result`ni to'g'ridan-to'g'ri chaqirib chegarani chetlab o'tish, (3) `wrong_review` javobidan foydalanib to'g'ri javoblarni asta-sekin "taxmin qilib topish". `reveal-answers` ham endi shu biletga bog'langan — faqat egasi, faqat allaqachon topshirilgan test uchun.
 - "To'g'ri javoblarni ko'rish" paroli ham serverda (`reveal-answers`) tekshiriladi — parol noto'g'ri bo'lsa hech qanday javob qaytmaydi.
-- Admin/o'qituvchi/o'quvchi autentifikatsiyasi barchasi haqiqiy Supabase Auth orqali; RLS siyosatlari admin uchun bitta belgilangan UUID'ga, o'qituvchi uchun `teacher_subjects`dagi fanlarga, o'quvchi uchun `student_accounts` orqali faqat o'z natijalariga yozish/o'qishga ruxsat beradi.
-- Reyting RPC funksiyalari (`get_monthly_rating` va h.k.) faqat haqiqiy super-adminga qaytaradi; o'quvchi esa faqat `get_my_rating()` orqali o'zining o'rnini ko'radi (boshqalarning ismini emas) — bularning barchasi Supabase Security Advisor orqali muntazam tasdiqlanadi.
+- Admin/o'qituvchi/o'quvchi autentifikatsiyasi barchasi haqiqiy Supabase Auth orqali; RLS siyosatlari admin uchun `admin_accounts`ga, o'qituvchi uchun `teacher_subjects`dagi fanlarga, o'quvchi uchun `student_accounts` orqali faqat o'z natijalariga yozish/o'qishga ruxsat beradi.
+- Reyting RPC funksiyalari (`get_monthly_rating` va h.k.) faqat haqiqiy adminga qaytaradi; o'quvchi esa faqat `get_my_rating()` orqali o'zining o'rnini ko'radi (boshqalarning ismini emas) — bularning barchasi Supabase Security Advisor orqali muntazam tasdiqlanadi.
+- Muhim admin harakatlari `audit_log`ga yoziladi (yuqorida batafsil).
 
 ### Bitta ixtiyoriy xavfsizlik yaxshilanishi (hozircha qo'llanilmagan)
 
