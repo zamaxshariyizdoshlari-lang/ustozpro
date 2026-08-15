@@ -30,16 +30,21 @@ Deno.serve(async (req: Request) => {
       return json({ error: "unauthorized" }, 401);
     }
 
-    const { data: teacher } = await supabase.from("teachers").select("full_name, login").eq("id", session.account_id).maybeSingle();
+    const { data: teacher } = await supabase.from("teachers").select("full_name, login, must_change_password").eq("id", session.account_id).maybeSingle();
     if (!teacher) return json({ error: "not_a_teacher" }, 403);
 
     const { data: subjRows } = await supabase.from("teacher_subjects").select("subject_name").eq("teacher_id", session.account_id).order("subject_name");
     const { data: classes } = await supabase.from("classes").select("id, name").order("name");
+    // Sinf/fan kaskad-tanlovini (savol CRUD) qurish uchun barcha fan qatorlari —
+    // teacherSubjects nomi bilan mos kelganlari frontendda filtrlanadi.
+    const { data: allSubjects } = await supabase.from("subjects").select("id, class_id, name").order("name");
 
     return json({
       profile: { full_name: teacher.full_name, login: teacher.login },
+      must_change_password: !!teacher.must_change_password,
       subject_names: (subjRows || []).map((r: { subject_name: string }) => r.subject_name),
       classes: classes || [],
+      subjects: allSubjects || [],
     });
   } catch (e) {
     return json({ error: "server_error", message: String(e) }, 500);

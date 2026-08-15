@@ -31,7 +31,7 @@ Deno.serve(async (req: Request) => {
       return json({ error: "unauthorized" }, 401);
     }
 
-    const { data: account } = await supabase.from("student_accounts").select("student_id, login").eq("id", session.account_id).maybeSingle();
+    const { data: account } = await supabase.from("student_accounts").select("student_id, login, must_change_password").eq("id", session.account_id).maybeSingle();
     if (!account) return json({ error: "not_a_student" }, 403);
 
     const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).single();
@@ -76,6 +76,7 @@ Deno.serve(async (req: Request) => {
 
     return json({
       profile: { full_name: student.full_name, class_name: cls.name, login: account.login },
+      must_change_password: !!account.must_change_password,
       subjects: (subjects || []).map((s: { name: string }) => s.name),
       settings: effSettings,
       history: history || [],

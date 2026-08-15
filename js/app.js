@@ -3,11 +3,17 @@
 ═══════════════════════════════════════════════ */
 const supabaseClient = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 
-// get-test/submit-result endi chaqiruvchining HAQIQIY sessiya tokenini talab qiladi
-// (mijoz aytgan ism-sinfga emas, shu token orqali aniqlangan hisobga ishonadi).
+// Har bir so'rov chaqiruvchining HAQIQIY sessiya tokenini yuboradi (mijoz aytgan
+// ism/rolga emas, shu token orqali aniqlangan hisobga ishonadi). Admin — haqiqiy
+// Supabase Auth tokeni; o'quvchi/o'qituvchi — custom_sessions bearer-tokeni.
 async function callEdgeFunction(name, body) {
-  const { data: { session } } = await supabaseClient.auth.getSession();
-  const token = session?.access_token || CONFIG.SUPABASE_ANON_KEY;
+  let token;
+  if (customSessionToken) {
+    token = customSessionToken;
+  } else {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    token = session?.access_token || CONFIG.SUPABASE_ANON_KEY;
+  }
   const res = await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/${name}`, {
     method: 'POST',
     headers: {
@@ -37,7 +43,10 @@ let teacherLoggedIn = false;
 let teacherSubjects = []; // faqat shu o'qituvchiga biriktirilgan fan nomlari
 let teacherName = '';
 let studentLoggedIn = false;
-let studentInfo = null; // {student_id, full_name, class_name, login}
+let studentInfo = null; // {full_name, class_name, login}
+let studentSubjects = []; // [name,...] — faqat o'quvchining o'z sinfidagi fanlar (custom-student-panel'dan)
+const CUSTOM_SESSION_KEY = 'ustoz_pro_custom_session';
+let customSessionToken = null; // o'quvchi/o'qituvchi bearer-tokeni (admin bo'lsa null — Supabase sessiyasi ishlatiladi)
 let classesCache = [];   // [{id,name}]
 let allStudents  = [];   // [{id,class_id,full_name}]
 let allSubjects  = [];   // [{id,class_id,name}]
@@ -87,10 +96,10 @@ async function refreshAdminResults() {
   const { data } = await supabaseClient.from('results').select('*').order('created_at', { ascending: false });
   adminResults = data || [];
 }
-// O'qituvchi natijalari — RLS (is_teacher_for_subject) so'rovni avtomatik o'z faniga cheklaydi
+// O'qituvchi natijalari — custom-teacher-results o'z faniga avtomatik cheklaydi
 async function refreshTeacherResults() {
-  const { data } = await supabaseClient.from('results').select('*').order('created_at', { ascending: false });
-  teacherResults = data || [];
+  const resp = await callEdgeFunction('custom-teacher-results', { action: 'list' });
+  teacherResults = resp.results || [];
 }
 async function loadSettings() {
   const { data } = await supabaseClient.from('settings').select('*').eq('id', 1).single();
@@ -99,17 +108,14 @@ async function loadSettings() {
 
 /* ═══════════════════════════════════════════════
    INIT — sayt LOGIN DARVOZASI bilan boshlanadi.
-   Jadvallarni o'qish endi faqat autentifikatsiyadan keyin ishlaydi (RLS shuni talab qiladi),
-   shuning uchun bu yerda hech narsa oldindan yuklanmaydi.
+   Jadvallarni o'qish endi faqat autentifikatsiyadan keyin ishlaydi, shuning
+   uchun bu yerda hech narsa oldindan yuklanmaydi. resolveCurrentRole() o'zi
+   ham haqiqiy Supabase sessiyasini (admin), ham saqlangan custom-tokenni
+   (o'quvchi/o'qituvchi) tekshiradi.
 ═══════════════════════════════════════════════ */
 async function init() {
-  const { data: { session } } = await supabaseClient.auth.getSession();
-  if (session) {
-    const role = await resolveCurrentRole();
-    if (!role) showAuthGate();
-  } else {
-    showAuthGate();
-  }
+  const role = await resolveCurrentRole();
+  if (!role) showAuthGate();
 }
 init();
 
@@ -136,23 +142,11 @@ function saveSettings() {
     applySettingsToTestSetup();
   });
 }
-// Sinf uchun alohida sozlama (class_settings) bo'lsa, global settings'ni shu bilan
-// birlashtiradi (null maydonlar globaldan meros olinadi). Faqat o'quvchi paneli uchun.
+// Sinf uchun alohida sozlama (class_settings) bo'lsa ham, samarali sozlama
+// (global+class_settings birlashtirilgan) endi custom-student-panel javobida
+// tayyor keladi — bu yerda alohida so'rov kerak emas (o'quvchida RLS orqali
+// class_settings'ni to'g'ridan-to'g'ri o'qish imkoni ham yo'q).
 let studentEffectiveSettings = null;
-async function computeStudentEffectiveSettings() {
-  const eff = { ...settings };
-  const cls = classesCache.find(c=>c.name===studentInfo?.class_name);
-  if (cls) {
-    const { data: cs } = await supabaseClient.from('class_settings').select('*').eq('class_id', cls.id).maybeSingle();
-    if (cs) {
-      eff.question_count = cs.question_count ?? eff.question_count;
-      eff.time_limit_minutes = cs.time_limit_minutes ?? eff.time_limit_minutes;
-      eff.max_attempts = cs.max_attempts ?? eff.max_attempts;
-      eff.enable_attempt_limit = cs.enable_attempt_limit ?? eff.enable_attempt_limit;
-    }
-  }
-  studentEffectiveSettings = eff;
-}
 function applySettingsToTestSetup() {
   const eff = studentEffectiveSettings || settings;
   const allowed = eff.allow_custom;
@@ -256,31 +250,62 @@ function closeTypeConfirm() {
 }
 
 /* ═══════════════════════════════════════════════
-   LOGIN DARVOZASI (Supabase Auth) — admin/o'qituvchi/o'quvchi
-   uchun yagona kirish nuqtasi. Login email shaklida bo'lishi
-   shart emas — "@" bo'lmasa avtomatik "@ustozpro.local" qo'shiladi
-   (admin uchun ADMIN_LOGIN_HINT alohida moslashtiriladi).
+   LOGIN DARVOZASI — admin/o'qituvchi/o'quvchi uchun yagona kirish nuqtasi.
+   Admin — haqiqiy Supabase Auth (email/ADMIN_LOGIN_HINT orqali). O'quvchi va
+   o'qituvchi endi Supabase Auth'da UMUMAN mavjud emas — ular custom-login
+   Edge Function orqali (bcrypt bilan bizning jadvalimizda tekshiriladi) o'z
+   custom_sessions tokenini oladi. Login shaklidan (masalan o'qituvchining
+   email-ko'rinishdagi logini) kelib chiqib rolni oldindan taxmin qilmaymiz —
+   avval admin sifatida sinaymiz, muvaffaqiyatsiz bo'lsa custom-login'ga
+   o'tamiz, shu bilan ikkala holat ham to'g'ri ishlaydi.
 ═══════════════════════════════════════════════ */
+function saveCustomSession(token, role) {
+  localStorage.setItem(CUSTOM_SESSION_KEY, JSON.stringify({ token, role }));
+}
+function loadCustomSession() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.token || !parsed?.role) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function clearCustomSession() { localStorage.removeItem(CUSTOM_SESSION_KEY); }
+
 async function gateLogin() {
   const loginRaw = document.getElementById('gateLoginInput').value.trim();
   const pass = document.getElementById('gatePassInput').value;
   if (!loginRaw || !pass) { showToast('⚠️','Login va parolni kiriting!','warning'); return; }
 
-  let email;
-  if (loginRaw.includes('@')) email = loginRaw;
-  else if (loginRaw === CONFIG.ADMIN_LOGIN_HINT) email = CONFIG.ADMIN_EMAIL;
-  else email = `${loginRaw}@ustozpro.local`;
-
   const btn = document.getElementById('gateLoginBtn'); if (btn) btn.disabled = true;
-  const { error } = await supabaseClient.auth.signInWithPassword({ email, password: pass });
-  if (btn) btn.disabled = false;
-  if (error) {
+  let success = false;
+
+  const adminEmail = loginRaw.includes('@') ? loginRaw : (loginRaw === CONFIG.ADMIN_LOGIN_HINT ? CONFIG.ADMIN_EMAIL : null);
+  if (adminEmail) {
+    const { error } = await supabaseClient.auth.signInWithPassword({ email: adminEmail, password: pass });
+    success = !error;
+  }
+
+  if (!success) {
+    const resp = await callEdgeFunction('custom-login', { login: loginRaw, password: pass });
+    if (resp && !resp.error && resp.session_token) {
+      customSessionToken = resp.session_token;
+      saveCustomSession(resp.session_token, resp.role);
+      success = true;
+    }
+  }
+
+  if (!success) {
+    if (btn) btn.disabled = false;
     document.getElementById('gatePassInput').style.borderColor='var(--danger)';
     showToast('❌','Login yoki parol noto\'g\'ri!','error');
     setTimeout(()=>document.getElementById('gatePassInput').style.borderColor='',1500);
     return;
   }
+
   const role = await resolveCurrentRole();
+  if (btn) btn.disabled = false;
   if (!role) { showToast('❌','Bu hisob tizimda tanilmadi','error'); return; }
   document.getElementById('gateLoginInput').value='';
   document.getElementById('gatePassInput').value='';
@@ -288,40 +313,63 @@ async function gateLogin() {
   showToast('✅',`Xush kelibsiz, ${label}!`,'success');
 }
 // Muvaffaqiyatli kirishdan keyin (yoki sahifa qayta yuklanganda) "men kimman"ni aniqlaydi:
-// admin, o'qituvchi, o'quvchi — yoki hech biri (unda chiqarib yuboriladi).
+// admin (Supabase Auth sessiyasi), o'qituvchi/o'quvchi (saqlangan custom-token) — yoki hech biri.
 async function resolveCurrentRole() {
-  const { data: isAdminRes } = await supabaseClient.rpc('is_admin');
-  if (isAdminRes) {
-    adminLoggedIn = true; teacherLoggedIn = false; studentLoggedIn = false;
-    teacherSubjects = []; teacherName = ''; studentInfo = null; mustChangePassword = false;
-    await enterAdminMode();
-    return 'admin';
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (session) {
+    const { data: isAdminRes } = await supabaseClient.rpc('is_admin');
+    if (isAdminRes) {
+      adminLoggedIn = true; teacherLoggedIn = false; studentLoggedIn = false;
+      teacherSubjects = []; teacherName = ''; studentInfo = null; mustChangePassword = false;
+      await enterAdminMode();
+      return 'admin';
+    }
+    // Endi bu holat kutilmagan — o'quvchi/o'qituvchi Supabase Auth'da mavjud
+    // emas, shuning uchun bu sessiya notanish hisoblanadi va tozalanadi.
+    await supabaseClient.auth.signOut();
   }
-  const { data: teacherRows } = await supabaseClient.rpc('get_my_teacher_info');
-  const tInfo = teacherRows && teacherRows[0];
-  if (tInfo && tInfo.full_name) {
-    adminLoggedIn = false; teacherLoggedIn = true; studentLoggedIn = false;
-    teacherSubjects = tInfo.subject_names || []; teacherName = tInfo.full_name; studentInfo = null;
-    mustChangePassword = !!tInfo.must_change_password;
-    await enterTeacherMode();
-    return 'teacher';
+
+  if (!customSessionToken) {
+    const stored = loadCustomSession();
+    if (stored) customSessionToken = stored.token;
   }
-  const { data: studentRows } = await supabaseClient.rpc('get_my_student_info');
-  const sInfo = studentRows && studentRows[0];
-  if (sInfo && sInfo.full_name) {
-    adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = true;
-    teacherSubjects = []; teacherName = ''; studentInfo = sInfo;
-    mustChangePassword = !!sInfo.must_change_password;
-    await enterStudentMode();
-    return 'student';
+  if (customSessionToken) {
+    const stored = loadCustomSession();
+    const role = stored?.role;
+    if (role === 'teacher') {
+      const data = await callEdgeFunction('custom-teacher-panel', {});
+      if (!data.error) {
+        adminLoggedIn = false; teacherLoggedIn = true; studentLoggedIn = false;
+        studentInfo = null;
+        await enterTeacherMode(data);
+        return 'teacher';
+      }
+    } else if (role === 'student') {
+      const data = await callEdgeFunction('custom-student-panel', {});
+      if (!data.error) {
+        adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = true;
+        teacherSubjects = []; teacherName = '';
+        await enterStudentMode(data);
+        return 'student';
+      }
+    }
+    // Token yaroqsiz/eskirgan — tozalaymiz
+    customSessionToken = null;
+    clearCustomSession();
   }
-  await supabaseClient.auth.signOut();
+
   adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
   teacherSubjects = []; teacherName = ''; studentInfo = null;
   return null;
 }
 async function doLogout() {
-  await supabaseClient.auth.signOut();
+  if (customSessionToken) {
+    try { await callEdgeFunction('custom-logout', {}); } catch (e) { /* baribir mahalliy holatni tozalaymiz */ }
+    customSessionToken = null;
+    clearCustomSession();
+  }
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (session) await supabaseClient.auth.signOut();
   adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
   teacherSubjects = []; teacherName = ''; studentInfo = null;
   document.getElementById('sidebarUserName').textContent = 'Foydalanuvchi';
@@ -352,12 +400,19 @@ function applyForcedPasswordGate() {
   if (banner) banner.style.display = mustChangePassword ? '' : 'none';
   if (normal) normal.style.display = mustChangePassword ? 'none' : '';
 }
-async function enterTeacherMode() {
+// panelData — custom-teacher-panel javobi (profil, must_change_password, subject_names, classes, subjects)
+async function enterTeacherMode(panelData) {
   hideAuthGate();
   applyRoleNav('teacher');
+  teacherName = panelData.profile.full_name;
+  teacherSubjects = panelData.subject_names || [];
+  mustChangePassword = !!panelData.must_change_password;
+  // classesCache/allSubjects — savol CRUD kaskad-tanlovi (tQClass→tQSubject) va
+  // natijalar filtri shu ikkalasiga tayanadi, xuddi admin uchun bo'lgani kabi.
+  classesCache = panelData.classes || [];
+  allSubjects = panelData.subjects || [];
   document.getElementById('sidebarUserName').textContent = teacherName;
   document.getElementById('sidebarUserRole').textContent = 'O\'qituvchi';
-  await Promise.all([refreshClasses(), refreshAllSubjects()]);
   document.getElementById('tPanelName').innerText = teacherName;
   document.getElementById('tPanelSubjects').innerText = teacherSubjects.join(', ') || '—';
   populateClassSelects();
@@ -365,17 +420,23 @@ async function enterTeacherMode() {
   applyForcedPasswordGate();
   navigateTo('teacher');
 }
-async function enterStudentMode() {
+// panelData — custom-student-panel javobi (profil, must_change_password, subjects, settings, history, rating)
+async function enterStudentMode(panelData) {
   hideAuthGate();
   applyRoleNav('student');
+  studentInfo = { full_name: panelData.profile.full_name, class_name: panelData.profile.class_name, login: panelData.profile.login };
+  studentSubjects = panelData.subjects || [];
+  studentEffectiveSettings = panelData.settings || settings;
+  mustChangePassword = !!panelData.must_change_password;
   document.getElementById('sidebarUserName').textContent = studentInfo.full_name;
   document.getElementById('sidebarUserRole').textContent = 'O\'quvchi';
-  await Promise.all([refreshClasses(), refreshAllSubjects(), loadSettings()]);
   document.getElementById('stuPanelName').innerText = studentInfo.full_name;
   document.getElementById('stuPanelClass').innerText = `🏫 ${studentInfo.class_name}`;
   populateStudentTestSubjectSelect();
-  await computeStudentEffectiveSettings();
   applySettingsToTestSetup();
+  renderStudentRatingCards(panelData.rating);
+  renderStudentHistory(panelData.history || []);
+  renderStudentProgressCharts(panelData.history || []);
   applyForcedPasswordGate();
   navigateTo('student');
   checkForResumeSession();
@@ -867,12 +928,12 @@ async function syncManageSelects() {
   await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects()]);
   populateClassSelects(); renderClassList();
 }
-// O'quvchi paneli — faqat o'z sinfi bo'yicha fan tanlanadi (sinf/ism allaqachon hisobdan ma'lum)
+// O'quvchi paneli — faqat o'z sinfi bo'yicha fan tanlanadi (custom-student-panel
+// javobida allaqachon shu sinfga cheklangan holda keladi)
 function populateStudentTestSubjectSelect() {
   const sel = document.getElementById('stuTestSubject'); if (!sel) return;
   sel.innerHTML = '<option value="">— Fanni tanlang —</option>';
-  const cls = classesCache.find(c=>c.name===studentInfo?.class_name);
-  if (cls) subjectsForClass(cls.id).forEach(s=>sel.innerHTML+=`<option value="${esc(s.name)}">${esc(s.name)}</option>`);
+  studentSubjects.forEach(name=>sel.innerHTML+=`<option value="${esc(name)}">${esc(name)}</option>`);
 }
 async function addClass() {
   if (classAddBusy) return;
@@ -1052,19 +1113,19 @@ function renderTeacherSubjectCheckboxes() {
 async function addTeacher() {
   if (teacherAddBusy) return;
   const full_name = document.getElementById('newTeacherName').value.trim();
-  const email = document.getElementById('newTeacherEmail').value.trim();
+  const login = document.getElementById('newTeacherEmail').value.trim();
   const password = document.getElementById('newTeacherPassword').value;
   const subject_names = [...document.querySelectorAll('#newTeacherSubjectsBox input:checked')].map(el=>el.value);
   if (!full_name) { showToast('⚠️','To\'liq ismni kiriting!','warning'); return; }
-  if (!email || !email.includes('@')) { showToast('⚠️','To\'g\'ri email kiriting!','warning'); return; }
+  if (!login) { showToast('⚠️','Login kiriting!','warning'); return; }
   if (!password || password.length < 6) { showToast('⚠️','Parol kamida 6 belgidan iborat bo\'lsin!','warning'); return; }
   if (subject_names.length===0) { showToast('⚠️','Kamida bitta fan tanlang!','warning'); return; }
 
   teacherAddBusy = true;
-  const { error } = await supabaseClient.rpc('admin_create_teacher', { p_full_name: full_name, p_email: email, p_password: password, p_subject_names: subject_names });
+  const { error } = await supabaseClient.rpc('admin_create_teacher', { p_full_name: full_name, p_email: login, p_password: password, p_subject_names: subject_names });
   teacherAddBusy = false;
   if (error) {
-    const msg = error.message?.includes('duplicate') || error.code==='23505' ? 'Bu email allaqachon band!' : 'Xatolik yuz berdi';
+    const msg = error.message?.includes('duplicate') || error.code==='23505' ? 'Bu login allaqachon band!' : 'Xatolik yuz berdi';
     showToast('❌', msg, 'error');
     return;
   }
@@ -1083,7 +1144,7 @@ async function renderTeacherList() {
   document.getElementById('teacherCount').innerText = teachers.length;
   list.innerHTML = teachers.length===0
     ? '<div class="empty-state">O\'qituvchilar yo\'q.</div>'
-    : teachers.map(t=>`<div class="list-item"><div class="li-icon">👨‍🏫</div><span class="li-text"><b>${esc(t.full_name)}</b> — ${esc(t.email)}<br><span style="color:var(--text-dim);font-size:11px">${(t.subject_names||[]).map(esc).join(', ')||'Fan biriktirilmagan'}</span></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="resetTeacherPassword('${t.id}','${t.full_name.replace(/'/g,"\\'")}')" title="Parolni tiklash">🔑</button><button class="li-del" onclick="removeTeacher('${t.id}','${t.full_name.replace(/'/g,"\\'")}')" title="O'chirish">🗑️</button></div></div>`).join('');
+    : teachers.map(t=>`<div class="list-item"><div class="li-icon">👨‍🏫</div><span class="li-text"><b>${esc(t.full_name)}</b> — ${esc(t.login)}<br><span style="color:var(--text-dim);font-size:11px">${(t.subject_names||[]).map(esc).join(', ')||'Fan biriktirilmagan'}</span></span><div style="display:flex;gap:4px"><button class="li-del" style="color:var(--primary)" onclick="resetTeacherPassword('${t.id}','${t.full_name.replace(/'/g,"\\'")}')" title="Parolni tiklash">🔑</button><button class="li-del" onclick="removeTeacher('${t.id}','${t.full_name.replace(/'/g,"\\'")}')" title="O'chirish">🗑️</button></div></div>`).join('');
 }
 async function resetTeacherPassword(id, name) {
   const newPass = prompt(`"${name}" uchun yangi parol kiriting (kamida 6 belgi):`);
@@ -1215,6 +1276,7 @@ function renderSubjectList() {
 ═══════════════════════════════════════════════ */
 const questionCtx = {
   admin: {
+    mode: 'admin',
     ids: { class:'qClass', subject:'qSubject', listArea:'questionListArea', count:'questionCount',
            text:'newQText', a:'newQA', b:'newQB', c:'newQC', d:'newQD', correct:'newQCorrect', hint:'newQHint',
            saveBtn:'qSaveBtn', cancelBtn:'qCancelEditBtn', formTitle:'qFormTitle', search:'qSearchInput',
@@ -1223,7 +1285,11 @@ const questionCtx = {
     subjectFilter: (subs) => subs,
     editFnName:'editQuestion', removeFnName:'removeQuestion', showMoreFnName:'showMoreQuestions',
   },
+  // teacher rejimida RLS o'rniga custom-teacher-questions Edge Function ishlatiladi
+  // (teacher endi Supabase JWT olmaydi) — subjectFilter esa faqat DOM select'ni
+  // to'ldirish uchun (haqiqiy egalik tekshiruvi har doim serverda qayta bajariladi).
   teacher: {
+    mode: 'teacher',
     ids: { class:'tQClass', subject:'tQSubject', listArea:'tQuestionListArea', count:'tQuestionCount',
            text:'tNewQText', a:'tNewQA', b:'tNewQB', c:'tNewQC', d:'tNewQD', correct:'tNewQCorrect', hint:'tNewQHint',
            saveBtn:'tQSaveBtn', cancelBtn:'tQCancelEditBtn', formTitle:'tQFormTitle', search:'tQSearchInput',
@@ -1253,8 +1319,15 @@ async function qRenderQuestionList(ctx) {
   qCancelEditQuestion(ctx);
   const searchEl = document.getElementById(ids.search); if (searchEl) searchEl.value='';
   if (!subjectId) { area.innerHTML=''; document.getElementById(ids.count).innerText='0'; ctx.state.items=[]; return; }
-  const { data, error } = await supabaseClient.from('questions').select('*').eq('subject_id', subjectId).order('created_at');
-  if (error) { area.innerHTML=`<div class="empty-state">Xatolik: ${esc(error.message)}</div>`; return; }
+  let data, errMsg;
+  if (ctx.mode === 'teacher') {
+    const resp = await callEdgeFunction('custom-teacher-questions', { action:'list', subject_id: subjectId });
+    data = resp.questions; errMsg = resp.error;
+  } else {
+    const resp = await supabaseClient.from('questions').select('*').eq('subject_id', subjectId).order('created_at');
+    data = resp.data; errMsg = resp.error?.message;
+  }
+  if (errMsg) { area.innerHTML=`<div class="empty-state">Xatolik: ${esc(errMsg)}</div>`; return; }
   ctx.state.items = data||[];
   qRenderFilteredQuestions(ctx);
 }
@@ -1319,11 +1392,20 @@ async function qSaveQuestion(ctx) {
   const btn=document.getElementById(ctx.ids.saveBtn); if (btn) btn.disabled=true;
   const payload = { subject_id: subjectId, question_text: text, option_a:a, option_b:b, option_c:c, option_d:d, correct_option: correct, hint };
   const wasEdit = !!ctx.state.editingId;
-  const { error } = wasEdit
-    ? await supabaseClient.from('questions').update(payload).eq('id', ctx.state.editingId)
-    : await supabaseClient.from('questions').insert(payload);
+  let errMsg;
+  if (ctx.mode === 'teacher') {
+    const resp = wasEdit
+      ? await callEdgeFunction('custom-teacher-questions', { action:'update', question_id: ctx.state.editingId, ...payload })
+      : await callEdgeFunction('custom-teacher-questions', { action:'create', ...payload });
+    errMsg = resp.error;
+  } else {
+    const resp = wasEdit
+      ? await supabaseClient.from('questions').update(payload).eq('id', ctx.state.editingId)
+      : await supabaseClient.from('questions').insert(payload);
+    errMsg = resp.error?.message;
+  }
   ctx.state.saveBusy = false; if (btn) btn.disabled=false;
-  if (error) { showToast('❌','Saqlashda xatolik','error'); return; }
+  if (errMsg) { showToast('❌','Saqlashda xatolik','error'); return; }
   ctx.state.editingId = null;
   [ctx.ids.text,ctx.ids.a,ctx.ids.b,ctx.ids.c,ctx.ids.d,ctx.ids.hint].forEach(id=>document.getElementById(id).value='');
   document.getElementById(ctx.ids.correct).value='a';
@@ -1336,8 +1418,15 @@ async function qRemoveQuestion(ctx, id) {
   const preview = q ? (q.question_text.length>50 ? q.question_text.slice(0,50)+'…' : q.question_text) : '';
   const ok = await askTypeConfirm('Savolni o\'chirish', `"${preview}" savoli butunlay o'chadi.`, 'OCHIRISH');
   if (!ok) return;
-  const { error } = await supabaseClient.from('questions').delete().eq('id', id);
-  if (error) { showToast('❌','Xatolik','error'); return; }
+  let errMsg;
+  if (ctx.mode === 'teacher') {
+    const resp = await callEdgeFunction('custom-teacher-questions', { action:'delete', question_id: id });
+    errMsg = resp.error;
+  } else {
+    const resp = await supabaseClient.from('questions').delete().eq('id', id);
+    errMsg = resp.error?.message;
+  }
+  if (errMsg) { showToast('❌','Xatolik','error'); return; }
   if (ctx.state.editingId===id) qCancelEditQuestion(ctx);
   await qRenderQuestionList(ctx);
   showToast('🗑️','Savol o\'chirildi.','info');
@@ -1372,10 +1461,17 @@ async function qBulkAddQuestions(ctx) {
 
   ctx.state.bulkBusy = true;
   const btn=document.getElementById(ctx.ids.bulkBtn); if (btn) btn.disabled=true;
-  const { error } = await supabaseClient.from('questions').insert(rows);
+  let errMsg;
+  if (ctx.mode === 'teacher') {
+    const resp = await callEdgeFunction('custom-teacher-questions', { action:'bulk_create', subject_id: subjectId, rows });
+    errMsg = resp.error;
+  } else {
+    const resp = await supabaseClient.from('questions').insert(rows);
+    errMsg = resp.error?.message;
+  }
   ctx.state.bulkBusy = false; if (btn) btn.disabled=false;
 
-  if (error) { showToast('❌','Saqlashda xatolik yuz berdi','error'); return; }
+  if (errMsg) { showToast('❌','Saqlashda xatolik yuz berdi','error'); return; }
   document.getElementById(ctx.ids.bulkText).value='';
   if (box) {
     box.style.display='block';
@@ -1443,8 +1539,8 @@ function teacherRenderResultsTable(resetPage=true) {
 function showMoreTeacherResults() { teacherResultsVisibleCount += 50; teacherRenderResultsTable(false); }
 async function teacherDeleteResult(id) {
   if (!confirm('Bu natijani o\'chirasizmi?')) return;
-  const { error } = await supabaseClient.from('results').delete().eq('id', id);
-  if (error) { showToast('❌','Xatolik (bu fan sizga tegishli emas bo\'lishi mumkin)','error'); return; }
+  const resp = await callEdgeFunction('custom-teacher-results', { action: 'delete', result_id: id });
+  if (resp.error) { showToast('❌','Xatolik (bu fan sizga tegishli emas bo\'lishi mumkin)','error'); return; }
   teacherResults = teacherResults.filter(r=>r.id!==id);
   teacherRenderResultsTable();
   showToast('🗑️','Natija o\'chirildi.','info');
@@ -1881,26 +1977,23 @@ function launchConfetti(percent){
 }
 
 /* ═══════════════════════════════════════════════
-   STUDENT CABINET — haqiqiy Supabase Auth (login+parol) orqali kirish.
-   Ma'lumotlar endi to'g'ridan-to'g'ri RLS orqali (get_my_rating RPC +
-   results jadvalidan o'z qatorlari) olinadi, alohida Edge Function shart emas.
+   STUDENT CABINET — custom-session (custom-login) orqali kirish.
+   Profil/tarix/reyting bitta custom-student-panel chaqiruvida keladi —
+   bu funksiya har safar "Mening kabinetim"ga qaytilganda yangilab turadi.
 ═══════════════════════════════════════════════ */
 async function loadStudentPanel() {
   if (!studentLoggedIn || !studentInfo) return;
-  const { data: history, error: hErr } = await supabaseClient
-    .from('results')
-    .select('id, subject_name, score, total, percent, cheat_count, elapsed_seconds, created_at')
-    .eq('student_name', studentInfo.full_name)
-    .eq('class_name', studentInfo.class_name)
-    .order('created_at', { ascending: false });
-  if (hErr) { showToast('❌','Ma\'lumotlarni yuklashda xatolik','error'); return; }
-
-  const { data: ratingRows, error: rErr } = await supabaseClient.rpc('get_my_rating');
-  const rating = (!rErr && ratingRows && ratingRows[0]) || null;
-
-  renderStudentRatingCards(rating);
-  renderStudentHistory(history||[]);
-  renderStudentProgressCharts(history||[]);
+  const data = await callEdgeFunction('custom-student-panel', {});
+  if (data.error) {
+    if (data.error === 'unauthorized') { showToast('❌','Sessiya muddati tugagan, qayta kiring','error'); doLogout(); return; }
+    showToast('❌','Ma\'lumotlarni yuklashda xatolik','error');
+    return;
+  }
+  studentSubjects = data.subjects || [];
+  studentEffectiveSettings = data.settings || settings;
+  renderStudentRatingCards(data.rating);
+  renderStudentHistory(data.history || []);
+  renderStudentProgressCharts(data.history || []);
 }
 function renderStudentRatingCards(rating) {
   const el = document.getElementById('stuRatingCards');
@@ -1951,8 +2044,8 @@ function renderStudentProgressCharts(history) {
     </div>`;
   }).join('');
 }
-// Umumiy "parolni almashtirish" — admin/o'qituvchi/o'quvchi barchasi uchun bir xil,
-// Supabase Auth'ning tayyor metodi orqali (maxsus RPC/Edge Function shart emas).
+// O'qituvchi/o'quvchi parolini almashtirish — custom-change-password Edge Function
+// orqali (endi Supabase Auth emas, o'z password_hash ustunimiz yangilanadi).
 let passwordChangeBusy = false;
 async function changeMyPassword() {
   if (passwordChangeBusy) return;
@@ -1963,17 +2056,14 @@ async function changeMyPassword() {
   if (p1 !== p2) { showToast('⚠️','Parollar mos kelmadi!','warning'); return; }
 
   passwordChangeBusy = true;
-  const { error } = await supabaseClient.auth.updateUser({ password: p1 });
+  const resp = await callEdgeFunction('custom-change-password', { new_password: p1 });
   passwordChangeBusy = false;
-  if (error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
 
   document.getElementById(`${idPrefix}NewPassword`).value = '';
   document.getElementById(`${idPrefix}NewPasswordConfirm`).value = '';
   showToast('✅','Parol yangilandi!','success');
 
-  if (mustChangePassword) {
-    await supabaseClient.rpc('mark_password_changed');
-    mustChangePassword = false;
-    applyForcedPasswordGate();
-  }
+  mustChangePassword = false;
+  applyForcedPasswordGate();
 }
