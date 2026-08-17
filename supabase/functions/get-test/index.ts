@@ -1,8 +1,8 @@
 // get-test — tanlangan fan uchun savollarni TO'G'RI JAVOBSIZ qaytaradi,
 // va agar admin "urinishlar chegarasi"ni yoqqan bo'lsa, uni tekshiradi.
-// Chaqiruvchi kimligi endi Supabase Auth JWT orqali emas, o'zimizning
-// custom_sessions bir martalik tokenimiz orqali aniqlanadi (verify_jwt=false —
-// chaqiruvchida haqiqiy Supabase JWT umuman yo'q).
+// Chaqiruvchi kimligi custom_sessions bir martalik tokenimiz orqali
+// aniqlanadi (verify_jwt=false). Har bir so'rov session.org_id bilan
+// cheklanadi — boshqa tashkilotning savol/sozlamalariga kirish mumkin emas.
 //
 // Tanlangan savollar bir martalik "test_sessions" biletiga yoziladi — submit-result
 // endi mijoz yuborgan savol ro'yxatiga emas, shu biletga ishonadi.
@@ -43,21 +43,22 @@ Deno.serve(async (req: Request) => {
     if (!session || session.role !== "student" || new Date(session.expires_at).getTime() < Date.now()) {
       return json({ error: "unauthorized" }, 401);
     }
+    const orgId = session.org_id;
 
-    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", session.account_id).maybeSingle();
+    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", session.account_id).eq("org_id", orgId).maybeSingle();
     if (!account) return json({ error: "not_a_student" }, 403);
 
-    const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).single();
-    const { data: cls } = await supabase.from("classes").select("id, name").eq("id", student.class_id).single();
+    const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).eq("org_id", orgId).single();
+    const { data: cls } = await supabase.from("classes").select("id, name").eq("id", student.class_id).eq("org_id", orgId).single();
 
     const { subject_name, count } = await req.json();
     if (!subject_name) return json({ error: "missing_fields" }, 400);
 
-    const { data: subj } = await supabase.from("subjects").select("id").eq("class_id", cls.id).eq("name", subject_name).maybeSingle();
+    const { data: subj } = await supabase.from("subjects").select("id").eq("class_id", cls.id).eq("org_id", orgId).eq("name", subject_name).maybeSingle();
     if (!subj) return json({ error: "subject_not_found" });
 
-    const { data: settings } = await supabase.from("settings").select("*").eq("id", 1).single();
-    const { data: classSettings } = await supabase.from("class_settings").select("*").eq("class_id", cls.id).maybeSingle();
+    const { data: settings } = await supabase.from("settings").select("*").eq("org_id", orgId).maybeSingle();
+    const { data: classSettings } = await supabase.from("class_settings").select("*").eq("class_id", cls.id).eq("org_id", orgId).maybeSingle();
 
     const effQuestionCount = classSettings?.question_count ?? settings?.question_count ?? 15;
     const effTimeLimit = classSettings?.time_limit_minutes ?? settings?.time_limit_minutes ?? 20;
@@ -68,6 +69,7 @@ Deno.serve(async (req: Request) => {
       const { count: attemptCount } = await supabase
         .from("results")
         .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
         .eq("student_name", student.full_name)
         .eq("class_name", cls.name)
         .eq("subject_name", subject_name);
@@ -79,7 +81,8 @@ Deno.serve(async (req: Request) => {
     const { data: questions } = await supabase
       .from("questions")
       .select("id, question_text, option_a, option_b, option_c, option_d, hint")
-      .eq("subject_id", subj.id);
+      .eq("subject_id", subj.id)
+      .eq("org_id", orgId);
 
     if (!questions || questions.length === 0) return json({ error: "no_questions" });
 
@@ -92,6 +95,7 @@ Deno.serve(async (req: Request) => {
     const { data: testSession, error: sessErr } = await supabase
       .from("test_sessions")
       .insert({
+        org_id: orgId,
         student_id: student.id,
         subject_id: subj.id,
         question_ids: picked.map((q) => q.id),

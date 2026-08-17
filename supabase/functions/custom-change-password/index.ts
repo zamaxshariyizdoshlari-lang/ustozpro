@@ -1,6 +1,7 @@
 // custom-change-password — o'quvchi yoki o'qituvchi o'z parolini almashtiradi.
 // Rol custom_sessions'dan aniqlanadi, tegishli jadvalning password_hash'i
-// yangilanadi va must_change_password o'chiriladi.
+// yangilanadi va must_change_password o'chiriladi. org_id filtri himoya
+// qatlami sifatida qo'shilgan (account_id allaqachon bitta org'ga tegishli).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -35,7 +36,11 @@ Deno.serve(async (req: Request) => {
     if (!hashed) return json({ error: "hash_failed" }, 500);
 
     const table = session.role === "teacher" ? "teachers" : "student_accounts";
-    const { error } = await supabase.from(table).update({ password_hash: hashed, must_change_password: false }).eq("id", session.account_id);
+    const { error } = await supabase
+      .from(table)
+      .update({ password_hash: hashed, must_change_password: false })
+      .eq("id", session.account_id)
+      .eq("org_id", session.org_id);
     if (error) return json({ error: "update_failed" }, 500);
 
     return json({ ok: true });

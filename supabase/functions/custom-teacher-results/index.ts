@@ -1,6 +1,6 @@
 // custom-teacher-results — o'qituvchining o'z fani(lar)i natijalarini
 // ko'rish/o'chirish. RLS o'rniga fan nomi teacher_subjects ro'yxatida
-// ekani kodda tekshiriladi.
+// ekani kodda tekshiriladi, VA hammasi tashkilot doirasida.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -29,9 +29,10 @@ Deno.serve(async (req: Request) => {
     if (!session || session.role !== "teacher" || new Date(session.expires_at).getTime() < Date.now()) {
       return json({ error: "unauthorized" }, 401);
     }
+    const orgId = session.org_id;
     const teacherId = session.account_id;
 
-    const { data: subjRows } = await supabase.from("teacher_subjects").select("subject_name").eq("teacher_id", teacherId);
+    const { data: subjRows } = await supabase.from("teacher_subjects").select("subject_name").eq("teacher_id", teacherId).eq("org_id", orgId);
     const teacherSubjects: string[] = (subjRows || []).map((r: { subject_name: string }) => r.subject_name);
 
     const body = await req.json();
@@ -39,15 +40,20 @@ Deno.serve(async (req: Request) => {
 
     if (action === "list") {
       if (teacherSubjects.length === 0) return json({ results: [] });
-      const { data, error } = await supabase.from("results").select("*").in("subject_name", teacherSubjects).order("created_at", { ascending: false });
+      const { data, error } = await supabase
+        .from("results")
+        .select("*")
+        .eq("org_id", orgId)
+        .in("subject_name", teacherSubjects)
+        .order("created_at", { ascending: false });
       if (error) return json({ error: "fetch_failed" }, 500);
       return json({ results: data || [] });
     }
 
     if (action === "delete") {
-      const { data: existing } = await supabase.from("results").select("subject_name").eq("id", body.result_id).maybeSingle();
+      const { data: existing } = await supabase.from("results").select("subject_name").eq("id", body.result_id).eq("org_id", orgId).maybeSingle();
       if (!existing || !teacherSubjects.includes(existing.subject_name)) return json({ error: "not_your_subject" }, 403);
-      const { error } = await supabase.from("results").delete().eq("id", body.result_id);
+      const { error } = await supabase.from("results").delete().eq("id", body.result_id).eq("org_id", orgId);
       if (error) return json({ error: "delete_failed" }, 500);
       return json({ ok: true });
     }

@@ -39,6 +39,9 @@ const DEFAULT_SUBJECTS = [
    STATE
 ═══════════════════════════════════════════════ */
 let adminLoggedIn = false;
+let adminOrgId = null;   // tashkilot admini o'z org_id'si — to'g'ridan-to'g'ri jadval yozuvlarida kerak (RLS WITH CHECK buni talab qiladi)
+let adminOrgName = '';
+let platformAdminLoggedIn = false; // platforma egasi — tashkilotlarni yaratadi/boshqaradi, maktab ma'lumotini ko'rmaydi
 let teacherLoggedIn = false;
 let teacherSubjects = []; // faqat shu o'qituvchiga biriktirilgan fan nomlari
 let teacherName = '';
@@ -102,7 +105,9 @@ async function refreshTeacherResults() {
   teacherResults = resp.results || [];
 }
 async function loadSettings() {
-  const { data } = await supabaseClient.from('settings').select('*').eq('id', 1).single();
+  // id=1 endi mavjud emas — settings jadvali org_id bo'yicha bitta qator
+  // (RLS o'zi adminning o'z tashkiloti qatoriga cheklaydi).
+  const { data } = await supabaseClient.from('settings').select('*').single();
   if (data) settings = data;
 }
 
@@ -115,7 +120,7 @@ async function loadSettings() {
 ═══════════════════════════════════════════════ */
 async function init() {
   const role = await resolveCurrentRole();
-  if (!role) showAuthGate();
+  if (!role) { showAuthGate(); prefillOrgSlugInput(); }
 }
 init();
 
@@ -136,7 +141,7 @@ function saveSettings() {
     allow_custom: document.getElementById('settingAllowCustom')?.checked || false,
     enable_attempt_limit: document.getElementById('settingEnableAttemptLimit')?.checked || false
   };
-  supabaseClient.from('settings').update(updated).eq('id', 1).then(({ error }) => {
+  supabaseClient.from('settings').update(updated).eq('org_id', adminOrgId).then(({ error }) => {
     if (error) { showToast('❌', 'Sozlamalarni saqlashda xatolik', 'error'); return; }
     settings = { ...settings, ...updated };
     applySettingsToTestSetup();
@@ -171,7 +176,8 @@ const SCREENS = {
   'manage':     { screen:'screen-manage',     nav:'nav-manage',  title:'Boshqarish',       bc:'Sinflar va o\'quvchilar' },
   'sync':       { screen:'screen-sync',       nav:'nav-sync',    title:'Bazani yangilash', bc:'Google Sheets import' },
   'teacher':    { screen:'screen-teacher',    nav:'nav-teacher', title:'Mening panelim',   bc:'O\'qituvchi paneli' },
-  'student':    { screen:'screen-student',    nav:'nav-student', title:'Mening kabinetim', bc:'O\'quvchi kabineti' }
+  'student':    { screen:'screen-student',    nav:'nav-student', title:'Mening kabinetim', bc:'O\'quvchi kabineti' },
+  'platform':   { screen:'screen-platform',   nav:'nav-platform',title:'Platforma',        bc:'Tashkilotlarni boshqarish' }
 };
 function navigateTo(page) {
   const cfg = SCREENS[page]; if (!cfg) return;
@@ -183,9 +189,10 @@ function navigateTo(page) {
   document.getElementById('topbarBreadcrumb').innerHTML = `<span>Ustoz Pro</span> › <span>${cfg.bc}</span>`;
   if (page==='manage' && adminLoggedIn) syncManageSelects();
   if (page==='home') { updateDashboardStats(); renderRecentResults(); }
-  if (page==='admin' && adminLoggedIn) { populateAdminFilters(); refreshAdminResults().then(()=>{renderResultsTable(); renderRatingPanel();}); }
+  if (page==='admin' && adminLoggedIn) { populateAdminFilters(); refreshAdminResults().then(()=>renderResultsTable()); }
   if (page==='teacher' && teacherLoggedIn) { refreshTeacherResults().then(()=>teacherRenderResultsTable()); }
   if (page==='student' && studentLoggedIn) loadStudentPanel();
+  if (page==='platform' && platformAdminLoggedIn) refreshPlatformOrgs();
   closeSidebar(); window.scrollTo({top:0,behavior:'smooth'});
 }
 // Sidebar navigatsiyasini rolga qarab ko'rsatadi — har bir rol faqat o'z bo'limini ko'radi
@@ -194,6 +201,7 @@ function applyRoleNav(role) {
   adminOnly.forEach(id=>{ const el=document.getElementById(id); if (el) el.style.display = role==='admin' ? '' : 'none'; });
   const teacherEl = document.getElementById('nav-teacher'); if (teacherEl) teacherEl.style.display = role==='teacher' ? '' : 'none';
   const studentEl = document.getElementById('nav-student'); if (studentEl) studentEl.style.display = role==='student' ? '' : 'none';
+  const platformEl = document.getElementById('nav-platform'); if (platformEl) platformEl.style.display = role==='platform' ? '' : 'none';
 }
 
 /* ═══════════════════════════════════════════════
@@ -273,7 +281,19 @@ function loadCustomSession() {
 }
 function clearCustomSession() { localStorage.removeItem(CUSTOM_SESSION_KEY); }
 
+// Oxirgi ishlatilgan "Maktab kodi" — faqat qulaylik uchun oldindan to'ldiriladi,
+// hisobga olinmaydi (haqiqiy tekshiruv har doim serverda).
+const LAST_ORG_SLUG_KEY = 'ustoz_pro_last_org_slug';
+function prefillOrgSlugInput() {
+  const input = document.getElementById('gateOrgInput');
+  if (!input) return;
+  const fromUrl = new URLSearchParams(window.location.search).get('org');
+  const slug = fromUrl || localStorage.getItem(LAST_ORG_SLUG_KEY) || '';
+  if (slug) input.value = slug;
+}
+
 async function gateLogin() {
+  const orgSlug = document.getElementById('gateOrgInput').value.trim().toLowerCase();
   const loginRaw = document.getElementById('gateLoginInput').value.trim();
   const pass = document.getElementById('gatePassInput').value;
   if (!loginRaw || !pass) { showToast('⚠️','Login va parolni kiriting!','warning'); return; }
@@ -287,13 +307,20 @@ async function gateLogin() {
     success = !error;
   }
 
-  if (!success) {
-    const resp = await callEdgeFunction('custom-login', { login: loginRaw, password: pass });
+  if (!success && orgSlug) {
+    const resp = await callEdgeFunction('custom-login', { org_slug: orgSlug, login: loginRaw, password: pass });
     if (resp && !resp.error && resp.session_token) {
       customSessionToken = resp.session_token;
       saveCustomSession(resp.session_token, resp.role);
+      localStorage.setItem(LAST_ORG_SLUG_KEY, orgSlug);
       success = true;
+    } else if (resp?.error === 'org_not_found') {
+      showToast('❌','Bunday maktab kodi topilmadi','error');
+    } else if (resp?.error === 'org_suspended') {
+      showToast('❌','Bu tashkilot vaqtincha to\'xtatilgan','error');
     }
+  } else if (!success && !orgSlug) {
+    showToast('⚠️','O\'quvchi/o\'qituvchi sifatida kirish uchun "Maktab kodi"ni kiriting!','warning');
   }
 
   if (!success) {
@@ -307,19 +334,28 @@ async function gateLogin() {
   const role = await resolveCurrentRole();
   if (btn) btn.disabled = false;
   if (!role) { showToast('❌','Bu hisob tizimda tanilmadi','error'); return; }
+  document.getElementById('gateOrgInput').value='';
   document.getElementById('gateLoginInput').value='';
   document.getElementById('gatePassInput').value='';
-  const label = role==='admin'?'Admin':role==='teacher'?teacherName:studentInfo.full_name;
+  const label = role==='platform'?'Platforma egasi':role==='admin'?'Admin':role==='teacher'?teacherName:studentInfo.full_name;
   showToast('✅',`Xush kelibsiz, ${label}!`,'success');
 }
 // Muvaffaqiyatli kirishdan keyin (yoki sahifa qayta yuklanganda) "men kimman"ni aniqlaydi:
-// admin (Supabase Auth sessiyasi), o'qituvchi/o'quvchi (saqlangan custom-token) — yoki hech biri.
+// platforma egasi yoki tashkilot admini (Supabase Auth sessiyasi), o'qituvchi/o'quvchi
+// (saqlangan custom-token) — yoki hech biri.
 async function resolveCurrentRole() {
   const { data: { session } } = await supabaseClient.auth.getSession();
   if (session) {
+    const { data: isPlatformRes } = await supabaseClient.rpc('is_platform_admin');
+    if (isPlatformRes) {
+      adminLoggedIn = false; platformAdminLoggedIn = true; teacherLoggedIn = false; studentLoggedIn = false;
+      teacherSubjects = []; teacherName = ''; studentInfo = null; mustChangePassword = false;
+      await enterPlatformMode();
+      return 'platform';
+    }
     const { data: isAdminRes } = await supabaseClient.rpc('is_admin');
     if (isAdminRes) {
-      adminLoggedIn = true; teacherLoggedIn = false; studentLoggedIn = false;
+      adminLoggedIn = true; platformAdminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
       teacherSubjects = []; teacherName = ''; studentInfo = null; mustChangePassword = false;
       await enterAdminMode();
       return 'admin';
@@ -339,7 +375,7 @@ async function resolveCurrentRole() {
     if (role === 'teacher') {
       const data = await callEdgeFunction('custom-teacher-panel', {});
       if (!data.error) {
-        adminLoggedIn = false; teacherLoggedIn = true; studentLoggedIn = false;
+        adminLoggedIn = false; platformAdminLoggedIn = false; teacherLoggedIn = true; studentLoggedIn = false;
         studentInfo = null;
         await enterTeacherMode(data);
         return 'teacher';
@@ -347,7 +383,7 @@ async function resolveCurrentRole() {
     } else if (role === 'student') {
       const data = await callEdgeFunction('custom-student-panel', {});
       if (!data.error) {
-        adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = true;
+        adminLoggedIn = false; platformAdminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = true;
         teacherSubjects = []; teacherName = '';
         await enterStudentMode(data);
         return 'student';
@@ -358,7 +394,7 @@ async function resolveCurrentRole() {
     clearCustomSession();
   }
 
-  adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
+  adminLoggedIn = false; platformAdminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
   teacherSubjects = []; teacherName = ''; studentInfo = null;
   return null;
 }
@@ -370,8 +406,8 @@ async function doLogout() {
   }
   const { data: { session } } = await supabaseClient.auth.getSession();
   if (session) await supabaseClient.auth.signOut();
-  adminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
-  teacherSubjects = []; teacherName = ''; studentInfo = null;
+  adminLoggedIn = false; platformAdminLoggedIn = false; teacherLoggedIn = false; studentLoggedIn = false;
+  teacherSubjects = []; teacherName = ''; studentInfo = null; adminOrgId = null; adminOrgName = '';
   document.getElementById('sidebarUserName').textContent = 'Foydalanuvchi';
   document.getElementById('sidebarUserRole').textContent = 'O\'quvchi';
   showAuthGate();
@@ -382,6 +418,14 @@ async function enterAdminMode() {
   applyRoleNav('admin');
   document.getElementById('sidebarUserName').textContent = 'Admin';
   document.getElementById('sidebarUserRole').textContent = 'Administrator';
+  const { data: orgRows } = await supabaseClient.rpc('admin_my_org');
+  const org = orgRows && orgRows[0];
+  adminOrgId = org?.id || null;
+  adminOrgName = org?.name || '';
+  const orgLabel = document.getElementById('adminOrgNameLabel');
+  if (orgLabel) orgLabel.textContent = adminOrgName ? `Tashkilot: ${adminOrgName}` : '';
+  const dashName = document.getElementById('dashboardOrgName');
+  if (dashName && adminOrgName) dashName.textContent = adminOrgName;
   await Promise.all([refreshClasses(), refreshAllStudents(), refreshAllSubjects(), loadSettings()]);
   populateClassSelects();
   renderClassList();
@@ -390,6 +434,72 @@ async function enterAdminMode() {
   renderRecentResults();
   navigateTo('home');
 }
+// Platforma egasi — tashkilotlarni yaratadi/ro'yxatini ko'radi/to'xtatadi.
+// Hech qaysi tashkilotning ichki (o'quvchi/natija) ma'lumotini ko'rmaydi.
+async function enterPlatformMode() {
+  hideAuthGate();
+  applyRoleNav('platform');
+  document.getElementById('sidebarUserName').textContent = 'Platforma egasi';
+  document.getElementById('sidebarUserRole').textContent = 'Platform admin';
+  await refreshPlatformOrgs();
+  navigateTo('platform');
+}
+/* ═══════════════════════════════════════════════
+   PLATFORM PANEL — tashkilotlarni yaratish/ro'yxat/to'xtatish
+═══════════════════════════════════════════════ */
+let platformOrgs = [];
+let platformCreateBusy = false;
+async function refreshPlatformOrgs() {
+  const resp = await callEdgeFunction('platform-list-orgs', {});
+  if (resp.error) { showToast('❌','Ro\'yxatni yuklashda xatolik','error'); return; }
+  platformOrgs = resp.orgs || [];
+  renderPlatformOrgList();
+}
+function renderPlatformOrgList() {
+  const list = document.getElementById('platformOrgList'); if (!list) return;
+  document.getElementById('platformOrgCount').innerText = platformOrgs.length;
+  list.innerHTML = platformOrgs.length===0
+    ? '<div class="empty-state">Hali tashkilot yo\'q.</div>'
+    : platformOrgs.map(o=>{
+        const active = o.status==='active';
+        return `<div class="list-item"><div class="li-icon">${active?'🏫':'⛔'}</div><span class="li-text"><b>${esc(o.name)}</b> — <span style="font-family:'DM Mono',monospace">${esc(o.slug)}</span><br><span style="color:var(--text-dim);font-size:11px">${active?'Faol':'To\'xtatilgan'} · ${fmtDate(o.created_at)}</span></span><button class="li-del" style="color:${active?'var(--danger)':'var(--success)'}" onclick="togglePlatformOrgStatus('${o.id}','${active?'suspended':'active'}')" title="${active?'To\'xtatish':'Faollashtirish'}">${active?'⛔':'▶'}</button></div>`;
+      }).join('');
+}
+async function createOrgViaPlatform() {
+  if (platformCreateBusy) return;
+  const org_name = document.getElementById('platformOrgName').value.trim();
+  const org_slug = document.getElementById('platformOrgSlug').value.trim().toLowerCase();
+  const admin_full_name = document.getElementById('platformAdminName').value.trim();
+  const admin_email = document.getElementById('platformAdminEmail').value.trim();
+  const admin_password = document.getElementById('platformAdminPassword').value;
+  if (!org_name || !org_slug) { showToast('⚠️','Tashkilot nomi va kodini kiriting!','warning'); return; }
+  if (!/^[a-z0-9-]+$/.test(org_slug)) { showToast('⚠️','Kod faqat kichik harf/raqam/tire bo\'lishi mumkin!','warning'); return; }
+  if (!admin_full_name || !admin_email) { showToast('⚠️','Admin ism va emailini kiriting!','warning'); return; }
+  if (!admin_password || admin_password.length < 6) { showToast('⚠️','Admin paroli kamida 6 belgidan iborat bo\'lsin!','warning'); return; }
+
+  platformCreateBusy = true;
+  const resp = await callEdgeFunction('platform-create-org', { org_name, org_slug, admin_full_name, admin_email, admin_password });
+  platformCreateBusy = false;
+  if (resp.error) {
+    const msg = resp.error==='slug_taken' ? 'Bu tashkilot kodi band!' : resp.error==='email_taken' ? 'Bu email allaqachon band!' : 'Xatolik yuz berdi';
+    showToast('❌', msg, 'error');
+    return;
+  }
+  document.getElementById('platformOrgName').value='';
+  document.getElementById('platformOrgSlug').value='';
+  document.getElementById('platformAdminName').value='';
+  document.getElementById('platformAdminEmail').value='';
+  document.getElementById('platformAdminPassword').value='';
+  await refreshPlatformOrgs();
+  showToast('✅',`"${org_name}" tashkiloti yaratildi!`,'success',`Kod: ${org_slug}`);
+}
+async function togglePlatformOrgStatus(orgId, newStatus) {
+  const resp = await callEdgeFunction('platform-set-org-status', { org_id: orgId, status: newStatus });
+  if (resp.error) { showToast('❌','Xatolik yuz berdi','error'); return; }
+  await refreshPlatformOrgs();
+  showToast(newStatus==='active'?'▶':'⛔', newStatus==='active'?'Tashkilot faollashtirildi':'Tashkilot to\'xtatildi','info');
+}
+
 // Admin bergan (yoki tiklagan) parol vaqtinchalik hisoblanadi — o'zi almashtirmaguncha
 // panelning qolgan qismi (savol/natija/test bo'limlari) ko'rinmaydi.
 let mustChangePassword = false;
@@ -420,7 +530,7 @@ async function enterTeacherMode(panelData) {
   applyForcedPasswordGate();
   navigateTo('teacher');
 }
-// panelData — custom-student-panel javobi (profil, must_change_password, subjects, settings, history, rating)
+// panelData — custom-student-panel javobi (profil, must_change_password, subjects, settings, history)
 async function enterStudentMode(panelData) {
   hideAuthGate();
   applyRoleNav('student');
@@ -434,7 +544,6 @@ async function enterStudentMode(panelData) {
   document.getElementById('stuPanelClass').innerText = `🏫 ${studentInfo.class_name}`;
   populateStudentTestSubjectSelect();
   applySettingsToTestSetup();
-  renderStudentRatingCards(panelData.rating);
   renderStudentHistory(panelData.history || []);
   renderStudentProgressCharts(panelData.history || []);
   applyForcedPasswordGate();
@@ -471,6 +580,7 @@ async function saveClassSettings() {
   const eal = document.getElementById('csEnableAttemptLimit').value;
   const payload = {
     class_id: clsId,
+    org_id: adminOrgId,
     question_count: qc===''?null:parseInt(qc),
     time_limit_minutes: tl===''?null:parseInt(tl),
     max_attempts: ma===''?null:parseInt(ma),
@@ -492,11 +602,10 @@ async function resetClassSettings() {
    ADMIN TABS
 ═══════════════════════════════════════════════ */
 function switchATab(tab) {
-  ['results','rating','settings'].forEach(t=>{
+  ['results','settings'].forEach(t=>{
     document.getElementById(`atab-${t}`)?.classList.toggle('active',t===tab);
     document.getElementById(`apanel-${t}`)?.classList.toggle('active',t===tab);
   });
-  if (tab==='rating') renderRatingPanel();
   if (tab==='settings') loadSettingsUI();
 }
 
@@ -507,16 +616,16 @@ function populateAdminFilters() {
   const classes = classesCache.map(c=>c.name);
   const allSubs = new Set(allSubjects.map(s=>s.name));
 
-  ['filterClass','ratingFilterClass'].forEach(id=>{
-    const el = document.getElementById(id); if (!el) return;
-    el.innerHTML = '<option value="">— Barcha sinflar —</option>';
-    classes.forEach(c=>el.innerHTML+=`<option value="${c}">${c}</option>`);
-  });
-  ['filterSubject','ratingFilterSub'].forEach(id=>{
-    const el = document.getElementById(id); if (!el) return;
-    el.innerHTML = '<option value="">— Barcha fanlar —</option>';
-    [...allSubs].sort().forEach(s=>el.innerHTML+=`<option value="${s}">${s}</option>`);
-  });
+  const clsEl = document.getElementById('filterClass');
+  if (clsEl) {
+    clsEl.innerHTML = '<option value="">— Barcha sinflar —</option>';
+    classes.forEach(c=>clsEl.innerHTML+=`<option value="${c}">${c}</option>`);
+  }
+  const subEl = document.getElementById('filterSubject');
+  if (subEl) {
+    subEl.innerHTML = '<option value="">— Barcha fanlar —</option>';
+    [...allSubs].sort().forEach(s=>subEl.innerHTML+=`<option value="${s}">${s}</option>`);
+  }
 }
 // O'qituvchi natijalar filtri — faqat o'ziga biriktirilgan fan(lar)
 function teacherPopulateFilters() {
@@ -581,73 +690,6 @@ function renderResultsTable(resetPage=true) {
 function showMoreResults() { resultsVisibleCount += 50; renderResultsTable(false); }
 
 /* ═══════════════════════════════════════════════
-   RATING SYSTEM
-   1200 ballik (Mutolaa tashqari) + 2000 ballik Mutolaa
-═══════════════════════════════════════════════ */
-async function renderRatingPanel() {
-  const fcls = document.getElementById('ratingFilterClass')?.value||'';
-  const fsub = document.getElementById('ratingFilterSub')?.value||'';
-
-  // Reyting hisob-kitobi endi serverda (Postgres RPC) bajariladi —
-  // barcha natijalarni brauzerga tortib client'da hisoblash o'rniga.
-  const [{ data: formulaRows }, { data: monthlyArr }, { data: mutArr }] = await Promise.all([
-    supabaseClient.rpc('get_rating_formula_info', { p_class: fcls || null }),
-    supabaseClient.rpc('get_monthly_rating', { p_class: fcls || null, p_subject: fsub || null }),
-    supabaseClient.rpc('get_mutolaa_rating', { p_class: fcls || null }),
-  ]);
-  const formula = (formulaRows && formulaRows[0]) || { total_non_mut_subjects:0, coeff:0, mut_total:1, mut_coeff:2000 };
-
-  const infoEl = document.getElementById('ratingFormulaInfo');
-  if (infoEl) {
-    infoEl.innerHTML = `
-      <div class="info-note" style="margin-bottom:11px">
-        📊 Jami fanlar (Mutolaa tashqari): <b>${formula.total_non_mut_subjects}</b> ·
-        Koeffitsiyent: <b>1200 / ${formula.total_non_mut_subjects} = ${Number(formula.coeff).toFixed(2)}</b> ·
-        Mutolaa koeffitsiyenti: <b>2000 / ${formula.mut_total} = ${Number(formula.mut_coeff).toFixed(2)}</b>
-      </div>`;
-  }
-
-  const monthlyBody = document.getElementById('monthlyRatingBody');
-  if (monthlyBody) {
-    if (!monthlyArr || monthlyArr.length===0) {
-      monthlyBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:22px;color:var(--text-dim)">Ma\'lumot yo\'q</td></tr>';
-    } else {
-      monthlyBody.innerHTML = monthlyArr.map((s,i)=>{
-        const rankClass = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'';
-        const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
-        const scoreClass = s.rating_score>=800?'high':s.rating_score>=400?'mid':'low';
-        return `<tr>
-          <td class="rank-cell ${rankClass}">${medal||i+1}</td>
-          <td><b>${esc(s.student_name)}</b></td>
-          <td>${esc(s.class_name)}</td>
-          <td style="font-family:'DM Mono',monospace">${s.total_correct} ta</td>
-          <td><span class="score-chip ${scoreClass}">${s.rating_score}</span></td>
-        </tr>`;
-      }).join('');
-    }
-  }
-
-  const mutBody = document.getElementById('mutolaaRatingBody');
-  if (mutBody) {
-    if (!mutArr || mutArr.length===0) {
-      mutBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:22px;color:var(--text-dim)">Mutolaa natijalari yo\'q</td></tr>';
-    } else {
-      mutBody.innerHTML = mutArr.map((s,i)=>{
-        const rankClass = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'';
-        const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
-        return `<tr>
-          <td class="rank-cell ${rankClass}">${medal||i+1}</td>
-          <td><b>${esc(s.student_name)}</b></td>
-          <td>${esc(s.class_name)}</td>
-          <td style="font-family:'DM Mono',monospace">${s.mut_correct} ta</td>
-          <td><span class="mutolaa-badge">📖 ${s.mut_score}</span></td>
-        </tr>`;
-      }).join('');
-    }
-  }
-}
-
-/* ═══════════════════════════════════════════════
    EXPORT EXCEL / PDF
 ═══════════════════════════════════════════════ */
 function exportToExcel() {
@@ -705,7 +747,7 @@ async function clearAllResults() {
   if (error) { showToast('❌','O\'chirishda xatolik','error'); return; }
   supabaseClient.rpc('admin_log_event', { p_action: 'clear_all_results' });
   adminResults = [];
-  renderResultsTable(); renderRatingPanel(); updateDashboardStats(); renderRecentResults();
+  renderResultsTable(); updateDashboardStats(); renderRecentResults();
   showToast('🗑️','Barcha natijalar o\'chirildi','info');
 }
 
@@ -819,7 +861,7 @@ function expandClassNames(raw) {
 async function getOrCreateClass(name) {
   let cls = classesCache.find(c=>c.name===name);
   if (cls) return cls.id;
-  const { data, error } = await supabaseClient.from('classes').insert({ name }).select().single();
+  const { data, error } = await supabaseClient.from('classes').insert({ org_id: adminOrgId, name }).select().single();
   if (error) {
     const { data: existing } = await supabaseClient.from('classes').select('*').eq('name',name).single();
     if (existing) { classesCache.push(existing); return existing.id; }
@@ -831,7 +873,7 @@ async function getOrCreateClass(name) {
 async function getOrCreateSubject(classId, name) {
   let subj = allSubjects.find(s=>s.class_id===classId && s.name===name);
   if (subj) return subj.id;
-  const { data, error } = await supabaseClient.from('subjects').insert({ class_id: classId, name }).select().single();
+  const { data, error } = await supabaseClient.from('subjects').insert({ org_id: adminOrgId, class_id: classId, name }).select().single();
   if (error) {
     const { data: existing } = await supabaseClient.from('subjects').select('*').eq('class_id',classId).eq('name',name).single();
     if (existing) { allSubjects.push(existing); return existing.id; }
@@ -893,7 +935,7 @@ async function syncData() {
       const clsId = classIdCache[p.clsName];
       const subjId = clsId ? subjectIdCache[`${clsId}__${p.fan}`] : null;
       if (!subjId) { errCount++; continue; }
-      questionRows.push({ subject_id: subjId, question_text:p.q, option_a:p.a, option_b:p.b, option_c:p.c, option_d:p.d, correct_option:p.cr, hint:p.hint });
+      questionRows.push({ org_id: adminOrgId, subject_id: subjId, question_text:p.q, option_a:p.a, option_b:p.b, option_c:p.c, option_d:p.d, correct_option:p.cr, hint:p.hint });
     }
     let count=0;
     const CHUNK=500;
@@ -941,13 +983,13 @@ async function addClass() {
   if (!name){showToast('⚠️','Sinf nomini kiriting!','warning');return;}
   classAddBusy = true;
   const btn = document.getElementById('addClassBtn'); if (btn) btn.disabled = true;
-  const { data, error } = await supabaseClient.from('classes').insert({ name }).select().single();
+  const { data, error } = await supabaseClient.from('classes').insert({ org_id: adminOrgId, name }).select().single();
   if (error) {
     showToast('⚠️', error.code==='23505'?'Bu sinf allaqachon mavjud!':'Xatolik yuz berdi','warning');
     classAddBusy = false; if (btn) btn.disabled = false;
     return;
   }
-  await supabaseClient.from('subjects').insert(DEFAULT_SUBJECTS.map(s=>({class_id:data.id,name:s})));
+  await supabaseClient.from('subjects').insert(DEFAULT_SUBJECTS.map(s=>({org_id:adminOrgId,class_id:data.id,name:s})));
   await Promise.all([refreshClasses(), refreshAllSubjects()]);
   populateClassSelects(); renderClassList();
   document.getElementById('newClassName').value='';
@@ -985,7 +1027,7 @@ async function addStudent() {
   studentAddBusy = true;
   const btn = document.getElementById('addStudentBtn'); if (btn) btn.disabled = true;
   const cls = classesCache.find(c=>c.name===clsName);
-  const { error } = await supabaseClient.from('students').insert({ class_id: cls.id, full_name: name });
+  const { error } = await supabaseClient.from('students').insert({ org_id: adminOrgId, class_id: cls.id, full_name: name });
   studentAddBusy = false; if (btn) btn.disabled = false;
   if (error) { showToast('⚠️', error.code==='23505'?'Bu o\'quvchi allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
   await refreshAllStudents();
@@ -1240,7 +1282,7 @@ async function addSubject() {
   subjectAddBusy = true;
   const btn = document.getElementById('addSubjectBtn'); if (btn) btn.disabled = true;
   const cls = classesCache.find(c=>c.name===clsName);
-  const { error } = await supabaseClient.from('subjects').insert({ class_id: cls.id, name });
+  const { error } = await supabaseClient.from('subjects').insert({ org_id: adminOrgId, class_id: cls.id, name });
   subjectAddBusy = false; if (btn) btn.disabled = false;
   if (error) { showToast('⚠️', error.code==='23505'?'Bu fan allaqachon mavjud!':'Xatolik yuz berdi','warning'); return; }
   await refreshAllSubjects();
@@ -1401,7 +1443,7 @@ async function qSaveQuestion(ctx) {
   } else {
     const resp = wasEdit
       ? await supabaseClient.from('questions').update(payload).eq('id', ctx.state.editingId)
-      : await supabaseClient.from('questions').insert(payload);
+      : await supabaseClient.from('questions').insert({ ...payload, org_id: adminOrgId });
     errMsg = resp.error?.message;
   }
   ctx.state.saveBusy = false; if (btn) btn.disabled=false;
@@ -1466,7 +1508,7 @@ async function qBulkAddQuestions(ctx) {
     const resp = await callEdgeFunction('custom-teacher-questions', { action:'bulk_create', subject_id: subjectId, rows });
     errMsg = resp.error;
   } else {
-    const resp = await supabaseClient.from('questions').insert(rows);
+    const resp = await supabaseClient.from('questions').insert(rows.map(r=>({ ...r, org_id: adminOrgId })));
     errMsg = resp.error?.message;
   }
   ctx.state.bulkBusy = false; if (btn) btn.disabled=false;
@@ -1978,8 +2020,8 @@ function launchConfetti(percent){
 
 /* ═══════════════════════════════════════════════
    STUDENT CABINET — custom-session (custom-login) orqali kirish.
-   Profil/tarix/reyting bitta custom-student-panel chaqiruvida keladi —
-   bu funksiya har safar "Mening kabinetim"ga qaytilganda yangilab turadi.
+   Profil/tarix bitta custom-student-panel chaqiruvida keladi — bu funksiya
+   har safar "Mening kabinetim"ga qaytilganda yangilab turadi.
 ═══════════════════════════════════════════════ */
 async function loadStudentPanel() {
   if (!studentLoggedIn || !studentInfo) return;
@@ -1991,20 +2033,8 @@ async function loadStudentPanel() {
   }
   studentSubjects = data.subjects || [];
   studentEffectiveSettings = data.settings || settings;
-  renderStudentRatingCards(data.rating);
   renderStudentHistory(data.history || []);
   renderStudentProgressCharts(data.history || []);
-}
-function renderStudentRatingCards(rating) {
-  const el = document.getElementById('stuRatingCards');
-  const cards = [];
-  if (rating?.monthly_rank) {
-    cards.push(`<div class="stat-card blue"><div class="stat-icon">🏆</div><div class="stat-num">#${rating.monthly_rank}</div><div class="stat-lbl">1200 ballik reyting (${rating.monthly_total} o'quvchidan)</div><div class="stat-trend trend-up">${rating.monthly_score} ball</div></div>`);
-  }
-  if (rating?.mutolaa_rank) {
-    cards.push(`<div class="stat-card purple"><div class="stat-icon">📖</div><div class="stat-num">#${rating.mutolaa_rank}</div><div class="stat-lbl">Mutolaa reytingi (${rating.mutolaa_total} o'quvchidan)</div><div class="stat-trend trend-up">${rating.mutolaa_score} ball</div></div>`);
-  }
-  el.innerHTML = cards.length ? cards.join('') : '<div class="empty-state">Reytingga tushish uchun kamida bitta test topshiring.</div>';
 }
 function renderStudentHistory(history) {
   const body = document.getElementById('stuHistoryBody');

@@ -27,6 +27,10 @@
     <div class="admin-login-title">Ustoz Pro</div>
     <div class="admin-login-sub">Davom etish uchun login va parolingizni kiriting</div>
     <div class="form-group" style="text-align:left">
+      <label class="form-label">Maktab kodi <span style="font-weight:400;color:var(--text-dim)">(o'quvchi/o'qituvchi uchun)</span></label>
+      <input type="text" class="form-control" id="gateOrgInput" placeholder="masalan: yunusobod-42" onkeydown="if(event.key==='Enter')document.getElementById('gateLoginInput').focus()">
+    </div>
+    <div class="form-group" style="text-align:left">
       <label class="form-label">Login</label>
       <input type="text" class="form-control" id="gateLoginInput" placeholder="login" onkeydown="if(event.key==='Enter')document.getElementById('gatePassInput').focus()">
     </div>
@@ -55,6 +59,7 @@
       <div class="nav-item active" id="nav-home" onclick="navigateTo('home')"><span class="nav-icon">🏠</span>Bosh sahifa</div>
       <div class="nav-item" id="nav-teacher" onclick="navigateTo('teacher')"><span class="nav-icon">👨‍🏫</span>Mening panelim</div>
       <div class="nav-item" id="nav-student" onclick="navigateTo('student')"><span class="nav-icon">👤</span>Mening kabinetim</div>
+      <div class="nav-item" id="nav-platform" onclick="navigateTo('platform')"><span class="nav-icon">🌐</span>Tashkilotlar</div>
       <div class="nav-section-label" id="navSectionAdmin">Boshqaruv</div>
       <div class="nav-item" id="nav-admin" onclick="navigateTo('admin')"><span class="nav-icon">🔐</span>Admin panel</div>
       <div class="nav-item" id="nav-manage" onclick="navigateTo('manage')"><span class="nav-icon">⚙️</span>Boshqarish</div>
@@ -95,7 +100,7 @@
         <div class="welcome-banner">
           <div class="welcome-content">
             <div class="welcome-greeting">👋 Xush kelibsiz</div>
-            <h1 class="welcome-title">Zamaxshariy<br>Izdoshlari Maktabi</h1>
+            <h1 class="welcome-title" id="dashboardOrgName">Ustoz Pro</h1>
             <p class="welcome-sub">Professional ta'lim platformasida o'quvchilaringiz bilimini sinab ko'ring.</p>
             <div class="welcome-actions">
               <button class="btn-white" onclick="navigateTo('admin')">🔐 Admin panel</button>
@@ -111,7 +116,7 @@
         </div>
         <div class="section-header"><div class="section-title">Tezkor harakatlar</div></div>
         <div class="quick-actions">
-          <div class="qa-card" onclick="navigateTo('admin')"><div class="qa-icon">🏆</div><div><div class="qa-title">Reyting ko'rish</div><div class="qa-desc">1200 ballik oylik reyting</div></div></div>
+          <div class="qa-card" onclick="navigateTo('admin')"><div class="qa-icon">📊</div><div><div class="qa-title">Natijalar</div><div class="qa-desc">Barcha test natijalarini ko'ring</div></div></div>
           <div class="qa-card" onclick="navigateTo('manage')"><div class="qa-icon">👥</div><div><div class="qa-title">O'quvchilar</div><div class="qa-desc">Sinflar va o'quvchilarni boshqaring</div></div></div>
           <div class="qa-card" onclick="navigateTo('manage')"><div class="qa-icon">👨‍🏫</div><div><div class="qa-title">O'qituvchilar</div><div class="qa-desc">Fan o'qituvchilarini boshqaring</div></div></div>
           <div class="qa-card" onclick="navigateTo('sync')"><div class="qa-icon">🔄</div><div><div class="qa-title">Bazani yangilash</div><div class="qa-desc">Savollarni yuklab oling</div></div></div>
@@ -221,14 +226,13 @@
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
             <div>
               <div class="section-title" style="font-size:20px">🔐 Admin Panel</div>
-              <div style="font-size:12px;color:var(--text-dim);margin-top:2px">O'qituvchi: Zamaxshariy Izdoshlari Maktabi</div>
+              <div style="font-size:12px;color:var(--text-dim);margin-top:2px" id="adminOrgNameLabel"></div>
             </div>
             <button class="btn btn-secondary btn-sm" onclick="doLogout()">↩ Chiqish</button>
           </div>
 
           <div class="admin-tabs">
             <button class="atab active" id="atab-results" onclick="switchATab('results')">📊 Natijalar</button>
-            <button class="atab" id="atab-rating" onclick="switchATab('rating')">🏆 Reyting</button>
             <button class="atab" id="atab-settings" onclick="switchATab('settings')">⚙️ Sozlamalar</button>
           </div>
 
@@ -260,41 +264,6 @@
             </div>
           </div>
 
-          <!-- Rating Tab -->
-          <div class="admin-panel" id="apanel-rating">
-            <div class="filter-row">
-              <select class="form-control select" id="ratingFilterClass" onchange="renderRatingPanel()">
-                <option value="">— Barcha sinflar —</option>
-              </select>
-              <select class="form-control select" id="ratingFilterSub" onchange="renderRatingPanel()">
-                <option value="">— Barcha fanlar —</option>
-              </select>
-            </div>
-
-            <div id="ratingFormulaInfo" style="margin-bottom:14px"></div>
-
-            <!-- Monthly rating (1200 ball) -->
-            <div style="margin-bottom:6px">
-              <div class="section-title" style="font-size:15px;margin-bottom:11px">🏆 Oylik Reyting (1200 ballik tizim)</div>
-              <div class="rating-table-wrap" style="margin-bottom:18px">
-                <table class="rating-tbl">
-                  <thead><tr><th>#</th><th>O'quvchi</th><th>Sinf</th><th>To'g'ri javoblar</th><th>Reyting balli</th></tr></thead>
-                  <tbody id="monthlyRatingBody"></tbody>
-                </table>
-              </div>
-            </div>
-
-            <!-- Mutolaa rating (2000 ball) -->
-            <div>
-              <div class="section-title" style="font-size:15px;margin-bottom:11px">📖 Mutolaa Reytingi (2000 ballik alohida tizim)</div>
-              <div class="rating-table-wrap">
-                <table class="rating-tbl">
-                  <thead><tr><th>#</th><th>O'quvchi</th><th>Sinf</th><th>Mutolaa to'g'ri</th><th>Mutolaa balli</th></tr></thead>
-                  <tbody id="mutolaaRatingBody"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
 
           <!-- Settings Tab -->
           <div class="admin-panel" id="apanel-settings">
@@ -552,6 +521,33 @@
         </div>
       </div>
 
+      <!-- ═══ PLATFORM PANEL — platforma egasi uchun: tashkilotlarni yaratish/boshqarish ═══ -->
+      <div class="screen" id="screen-platform">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
+          <div>
+            <div class="section-title" style="font-size:20px">🌐 Tashkilotlar</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:2px">Har bir maktab/o'quv markazi — alohida, bir-biridan ajratilgan tashkilot</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="doLogout()">↩ Chiqish</button>
+        </div>
+
+        <div class="setup-card">
+          <div class="setup-card-header"><div class="setup-card-icon">➕</div><div><div class="setup-card-title">Yangi tashkilot yaratish</div><div class="setup-card-subtitle">Tashkilot va uning birinchi admini bir amalda yaratiladi</div></div></div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Tashkilot nomi</label><input type="text" class="form-control" id="platformOrgName" placeholder="masalan: Yunusobod 42-maktab"></div>
+            <div class="form-group"><label class="form-label">Tashkilot kodi (slug)</label><input type="text" class="form-control" id="platformOrgSlug" placeholder="masalan: yunusobod-42"></div>
+          </div>
+          <div class="form-group"><label class="form-label">Admin to'liq ismi</label><input type="text" class="form-control" id="platformAdminName" placeholder="Ism Familiya"></div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Admin email</label><input type="email" class="form-control" id="platformAdminEmail" placeholder="admin@maktab.uz"></div>
+            <div class="form-group"><label class="form-label">Admin paroli</label><input type="password" class="form-control" id="platformAdminPassword" placeholder="Kamida 6 belgi"></div>
+          </div>
+          <button class="btn btn-primary btn-md btn-full" onclick="createOrgViaPlatform()">+ Tashkilot yaratish</button>
+          <div class="sec-head"><h4>Tashkilotlar ro'yxati</h4><span class="badge" id="platformOrgCount">0</span></div>
+          <div id="platformOrgList"></div>
+        </div>
+      </div>
+
       <!-- ═══ TEACHER PANEL — admin ekranlaridan mustaqil, faqat o'z faniga cheklangan ═══ -->
       <div class="screen" id="screen-teacher">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
@@ -689,8 +685,6 @@
             </div>
             <button class="btn btn-primary btn-lg btn-full" onclick="startTest()">▶&nbsp; Testni boshlash</button>
           </div>
-
-          <div class="stats-grid" id="stuRatingCards"></div>
 
           <div class="section-header"><div class="section-title">Fanlar bo'yicha rivojlanish</div></div>
           <div id="stuProgressCharts"><div class="empty-state">Hali test natijasi yo'q.</div></div>

@@ -1,7 +1,8 @@
 // submit-result — javoblarni SERVERDA baholaydi, natijani bazaga yozadi,
-// va Telegram xabarnomasini yuboradi (bot tokeni faqat shu yerda, service_role orqali).
-// Chaqiruvchi kimligi custom_sessions bir martalik tokenimiz orqali aniqlanadi
-// (verify_jwt=false — haqiqiy Supabase JWT yo'q).
+// va Telegram xabarnomasini yuboradi (bot tokeni endi TASHKILOT-DOIRASIDA
+// app_secrets'dan, service_role orqali). Chaqiruvchi kimligi custom_sessions
+// bir martalik tokenimiz orqali aniqlanadi (verify_jwt=false). Har bir
+// so'rov session.org_id bilan cheklanadi.
 //
 // Savollar ro'yxati ham mijozdan emas, get-test yaratgan bir martalik
 // "test_sessions" biletidan olinadi — bilet faqat shu o'quvchiga tegishli,
@@ -35,33 +36,35 @@ Deno.serve(async (req: Request) => {
     if (!customSession || customSession.role !== "student" || new Date(customSession.expires_at).getTime() < Date.now()) {
       return json({ error: "unauthorized" }, 401);
     }
+    const orgId = customSession.org_id;
 
-    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", customSession.account_id).maybeSingle();
+    const { data: account } = await supabase.from("student_accounts").select("student_id").eq("id", customSession.account_id).eq("org_id", orgId).maybeSingle();
     if (!account) return json({ error: "not_a_student" }, 403);
 
-    const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).single();
-    const { data: cls } = await supabase.from("classes").select("id, name").eq("id", student.class_id).single();
+    const { data: student } = await supabase.from("students").select("id, full_name, class_id").eq("id", account.student_id).eq("org_id", orgId).single();
+    const { data: cls } = await supabase.from("classes").select("id, name").eq("id", student.class_id).eq("org_id", orgId).single();
 
     const { session_id, answers, cheat_count, elapsed_seconds } = await req.json();
     if (!session_id) return json({ error: "missing_fields" }, 400);
 
-    const { data: session } = await supabase.from("test_sessions").select("*").eq("id", session_id).maybeSingle();
+    const { data: session } = await supabase.from("test_sessions").select("*").eq("id", session_id).eq("org_id", orgId).maybeSingle();
     if (!session || session.student_id !== student.id) return json({ error: "invalid_session" }, 403);
     if (session.consumed_at) return json({ error: "session_already_used" }, 409);
     if (new Date(session.expires_at).getTime() < Date.now()) return json({ error: "session_expired" }, 410);
 
-    const { data: subj } = await supabase.from("subjects").select("name").eq("id", session.subject_id).single();
+    const { data: subj } = await supabase.from("subjects").select("name").eq("id", session.subject_id).eq("org_id", orgId).single();
     const subject_name = subj.name;
     const question_ids: string[] = session.question_ids;
 
-    const { data: settings } = await supabase.from("settings").select("*").eq("id", 1).single();
-    const { data: classSettings } = await supabase.from("class_settings").select("*").eq("class_id", cls.id).maybeSingle();
+    const { data: settings } = await supabase.from("settings").select("*").eq("org_id", orgId).maybeSingle();
+    const { data: classSettings } = await supabase.from("class_settings").select("*").eq("class_id", cls.id).eq("org_id", orgId).maybeSingle();
     const effMaxAttempts = classSettings?.max_attempts ?? settings?.max_attempts ?? 3;
     const effEnableAttemptLimit = classSettings?.enable_attempt_limit ?? settings?.enable_attempt_limit ?? false;
     if (effEnableAttemptLimit) {
       const { count: attemptCount } = await supabase
         .from("results")
         .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
         .eq("student_name", student.full_name)
         .eq("class_name", cls.name)
         .eq("subject_name", subject_name);
@@ -76,6 +79,7 @@ Deno.serve(async (req: Request) => {
     const { data: questions, error: qErr } = await supabase
       .from("questions")
       .select("id, question_text, option_a, option_b, option_c, option_d, correct_option")
+      .eq("org_id", orgId)
       .in("id", question_ids);
 
     if (qErr || !questions) return json({ error: "questions_fetch_failed" }, 500);
@@ -105,6 +109,7 @@ Deno.serve(async (req: Request) => {
     const { data: inserted, error: insErr } = await supabase
       .from("results")
       .insert({
+        org_id: orgId,
         student_name, class_name, subject_name,
         score, total, percent,
         cheat_count: cheat_count || 0,
@@ -115,11 +120,11 @@ Deno.serve(async (req: Request) => {
 
     if (insErr || !inserted) return json({ error: "insert_failed" }, 500);
 
-    await supabase.from("test_sessions").update({ consumed_at: new Date().toISOString() }).eq("id", session_id);
+    await supabase.from("test_sessions").update({ consumed_at: new Date().toISOString() }).eq("id", session_id).eq("org_id", orgId);
 
     try {
-      const { data: tgTokenRow } = await supabase.from("app_secrets").select("value").eq("key", "TG_TOKEN").maybeSingle();
-      const { data: tgChatRow } = await supabase.from("app_secrets").select("value").eq("key", "TG_CHAT").maybeSingle();
+      const { data: tgTokenRow } = await supabase.from("app_secrets").select("value").eq("org_id", orgId).eq("key", "TG_TOKEN").maybeSingle();
+      const { data: tgChatRow } = await supabase.from("app_secrets").select("value").eq("org_id", orgId).eq("key", "TG_CHAT").maybeSingle();
       if (tgTokenRow?.value && tgChatRow?.value) {
         const text =
           `📝 *Yangi test natijasi*\n` +

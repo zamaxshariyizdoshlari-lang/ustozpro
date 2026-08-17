@@ -1,6 +1,7 @@
 // custom-teacher-panel — o'qituvchi paneli uchun profil, biriktirilgan
 // fanlar va sinflar ro'yxatini qaytaradi. Identifikatsiya custom_sessions
-// token orqali (verify_jwt=false).
+// token orqali (verify_jwt=false). Har bir so'rov session.org_id bilan
+// cheklanadi.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -29,15 +30,21 @@ Deno.serve(async (req: Request) => {
     if (!session || session.role !== "teacher" || new Date(session.expires_at).getTime() < Date.now()) {
       return json({ error: "unauthorized" }, 401);
     }
+    const orgId = session.org_id;
 
-    const { data: teacher } = await supabase.from("teachers").select("full_name, login, must_change_password").eq("id", session.account_id).maybeSingle();
+    const { data: teacher } = await supabase
+      .from("teachers")
+      .select("full_name, login, must_change_password")
+      .eq("id", session.account_id)
+      .eq("org_id", orgId)
+      .maybeSingle();
     if (!teacher) return json({ error: "not_a_teacher" }, 403);
 
     const { data: subjRows } = await supabase.from("teacher_subjects").select("subject_name").eq("teacher_id", session.account_id).order("subject_name");
-    const { data: classes } = await supabase.from("classes").select("id, name").order("name");
+    const { data: classes } = await supabase.from("classes").select("id, name").eq("org_id", orgId).order("name");
     // Sinf/fan kaskad-tanlovini (savol CRUD) qurish uchun barcha fan qatorlari —
     // teacherSubjects nomi bilan mos kelganlari frontendda filtrlanadi.
-    const { data: allSubjects } = await supabase.from("subjects").select("id, class_id, name").order("name");
+    const { data: allSubjects } = await supabase.from("subjects").select("id, class_id, name").eq("org_id", orgId).order("name");
 
     return json({
       profile: { full_name: teacher.full_name, login: teacher.login },
